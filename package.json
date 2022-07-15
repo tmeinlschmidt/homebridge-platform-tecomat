@@ -1,16 +1,16 @@
 {
   "private": true,
-  "displayName": "Plugin Name",
-  "name": "homebridge-plugin-name",
-  "version": "1.0.0",
-  "description": "A short description about what your plugin does.",
+  "displayName": "Tecomat bridge",
+  "name": "homebridge-platform-tecomat",
+  "version": "0.0.1",
+  "description": "A simple bridge to tecomat iFoxtrot controls",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git://github.com/USERNAME/GITHUB_PROJECT_NAME.git"
+    "url": "git://github.com/tmeinlschmidt/homebridge-platform-tecomat.git"
   },
   "bugs": {
-    "url": "https://github.com/USERNAME/GITHUB_PROJECT_NAME/issues"
+    "url": "https://github.com/tmeinlschmidt/homebridge-platform-tecomat/issues"
   },
   "engines": {
     "node": ">=14.18.1",
@@ -24,7 +24,8 @@
     "prepublishOnly": "npm run lint && npm run build"
   },
   "keywords": [
-    "homebridge-plugin"
+    "homebridge-plugin",
+    "tecomat"
   ],
   "dependencies": {},
   "devDependencies": {
