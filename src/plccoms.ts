@@ -3,14 +3,21 @@ import { Logging } from 'homebridge';
 
 export class PLCComS {
 
-  public ip: string;
-  public port: number;
-  public log: Logging;
+  private readonly ip: string;
+  private readonly port: number;
+  private readonly log: Logging;
+  private telnetClient: Telnet;
 
   constructor(ip: string, port: number, logFunction: Logging) {
     this.ip = ip;
     this.port = port;
     this.log = logFunction;
+    this.telnetClient = new Telnet();
+    this.connectToPLC();
+  }
+
+  async connectToPLC() {
+    await this.telnetClient.connect({host: this.ip, port: this.port, timeout: 1500, echoLines: 0});
   }
 
   info() {
@@ -20,18 +27,7 @@ export class PLCComS {
   }
 
   async readData(command: string) {
-    const client = new Telnet();
-    const params = {
-      host: this.ip,
-      port: this.port,
-      timeout: 1500,
-    };
-    try {
-      await client.connect(params);
-    } catch (error) {
-      // handle!
-    }
-    const result = await client.exec(command);
+    const result = await this.telnetClient.exec(command);
     return(result);
   }
 }
