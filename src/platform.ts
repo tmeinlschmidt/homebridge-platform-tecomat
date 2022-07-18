@@ -25,7 +25,7 @@ export class TecomatPlatform implements DynamicPlatformPlugin {
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {
-    this.log.debug('Finished initializing platform:', this.config.name);
+    this.log.info('Finished initializing platform:', this.config.name);
 
     this.ip = this.config.ip;
     this.port = this.config.port || 5010;

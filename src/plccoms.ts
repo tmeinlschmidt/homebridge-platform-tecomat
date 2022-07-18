@@ -14,8 +14,9 @@ export class PLCComS {
   }
 
   info() {
+    this.log.info('reading info from teco');
     const _info = this.readData('GETINFO:');
-    this.log.debug('info from teco', _info);
+    this.log.info('info from teco', _info);
   }
 
   async readData(command: string) {
