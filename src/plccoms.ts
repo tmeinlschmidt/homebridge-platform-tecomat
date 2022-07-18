@@ -17,6 +17,7 @@ export class PLCComS {
   }
 
   async connectToPLC() {
+    this.log.info('connecting to ${this.ip}:${this.port}');
     await this.telnetClient.connect({host: this.ip, port: this.port, timeout: 1500, echoLines: 0});
   }
 
