@@ -89,14 +89,14 @@ export const md5 = (string) => {
     let lByte, lCount;
     for (lCount = 0; lCount <= 3; lCount++) {
       lByte = (lValue >>> (lCount * 8)) & 255;
-      WordToHexValue_temp = "0" + lByte.toString(16);
+      WordToHexValue_temp = '0' + lByte.toString(16);
       WordToHexValue = WordToHexValue + WordToHexValue_temp.substr(WordToHexValue_temp.length - 2, 2);
     }
     return WordToHexValue;
   }
 
   function Utf8Encode(string) {
-    string = string.replace(/\r\n/g, "\n");
+    string = string.replace(/\r\n/g, '\n');
     let utftext = '';
 
     for (let n = 0; n < string.length; n++) {
@@ -224,4 +224,4 @@ export const md5 = (string) => {
   const temp = WordToHex(a) + WordToHex(b) + WordToHex(c) + WordToHex(d);
 
   return temp.toUpperCase();
-}
+};

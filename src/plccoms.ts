@@ -1,4 +1,4 @@
-import { Telnet } from 'telnet-client'
+import { Telnet } from 'telnet-client';
 
 export class PLCComS {
 
@@ -6,7 +6,7 @@ export class PLCComS {
   public port: number;
   public log: (text: string) => void;
 
-  constructor(ip: string, port: number, logFunction: any) {
+  constructor(ip: string, port: number, logFunction: unknown) {
     this.ip = ip;
     this.port = port;
     this.log = logFunction;
@@ -22,8 +22,8 @@ export class PLCComS {
     const params = {
       host: this.ip,
       port: this.port,
-      timeout: 1500
-    }
+      timeout: 1500,
+    };
     try {
       await client.connect(params);
     } catch (error) {

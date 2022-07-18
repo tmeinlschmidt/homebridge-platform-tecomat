@@ -13,7 +13,7 @@ export class TecomatPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
 
-  public plccoms: any;
+  public plccom: PLCComS;
   public ip: string;
   public port: number;
 
@@ -30,7 +30,7 @@ export class TecomatPlatform implements DynamicPlatformPlugin {
     this.ip = this.config.ip;
     this.port = this.config.port || 5010;
 
-    this.plccoms = new PLCComS(this.ip, this.port, this.log);
+    this.plccom = new PLCComS(this.ip, this.port, this.log);
 
     // When this event is fired it means Homebridge has restored all cached accessories from disk.
     // Dynamic Platform plugins should only register new accessories after this event was fired,
