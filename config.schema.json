@@ -1,15 +1,21 @@
 {
-  "pluginAlias": "HomeBridgePlatformTecomat",
+  "pluginAlias": "PlatformTecomat",
   "pluginType": "platform",
   "singular": true,
   "schema": {
     "type": "object",
     "properties": {
       "name": {
-        "title": "Name",
+        "title": "ip",
         "type": "string",
         "required": true,
-        "default": "Example Dynamic Platform"
+        "default": "PLCComS IP"
+      },
+      "port": {
+        "title": "port",
+        "type": "number",
+        "required": false,
+        "default": 5010
       }
     }
   }
