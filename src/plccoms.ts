@@ -1,12 +1,13 @@
 import { Telnet } from 'telnet-client';
+import { Logging } from 'homebridge';
 
 export class PLCComS {
 
   public ip: string;
   public port: number;
-  public log: any;
+  public log: Logging;
 
-  constructor(ip: string, port: number, logFunction: unknown) {
+  constructor(ip: string, port: number, logFunction: Logging) {
     this.ip = ip;
     this.port = port;
     this.log = logFunction;
@@ -14,7 +15,7 @@ export class PLCComS {
 
   info() {
     const _info = this.readData('GETINFO:');
-    this.log('info from teco' + _info);
+    this.log.info('info from teco', _info);
   }
 
   async readData(command: string) {

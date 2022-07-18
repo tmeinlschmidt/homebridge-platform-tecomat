@@ -5,11 +5,11 @@
   "schema": {
     "type": "object",
     "properties": {
-      "name": {
-        "title": "ip",
+      "ip": {
+        "title": "PLCComS IP",
         "type": "string",
         "required": true,
-        "default": "PLCComS IP"
+        "default": ""
       },
       "port": {
         "title": "port",
