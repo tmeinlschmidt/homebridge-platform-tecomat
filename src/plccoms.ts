@@ -4,7 +4,7 @@ export class PLCComS {
 
   public ip: string;
   public port: number;
-  public log: (text: string) => void;
+  public log: any;
 
   constructor(ip: string, port: number, logFunction: unknown) {
     this.ip = ip;

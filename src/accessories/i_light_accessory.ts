@@ -50,10 +50,11 @@ export class iLightAccessory implements AccessoryPlugin {
   async getOn(): Promise<CharacteristicValue> {
 		const isOn = this.accStates.On;
 		this.updateOn();
-		return IsOn;
+		return isOn;
   }
 
   updateOn() {
+    return false;
   }
 
 }

@@ -1,1 +1,1 @@
-import { iLight } from './i_light';
+import { iLightAccessory } from './i_light_accessory';
