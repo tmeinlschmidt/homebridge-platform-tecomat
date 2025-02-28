@@ -25,10 +25,12 @@
   },
   "keywords": [
     "homebridge-plugin",
-    "tecomat"
+    "tecomat",
+    "plc",
+    "jalousie"
   ],
   "dependencies": {
-    "telnet-client": "^2.0.4"
+    "net": "^1.0.2"
   },
   "devDependencies": {
     "@types/node": "^16.10.9",

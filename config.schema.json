@@ -1,21 +1,53 @@
 {
-  "pluginAlias": "HomeBridgePlatformTecomat",
+  "pluginAlias": "HomeBridgePlcJalousie",
   "pluginType": "platform",
   "singular": true,
   "schema": {
     "type": "object",
     "properties": {
-      "ip": {
-        "title": "PLCComS IP",
+      "name": {
+        "title": "Name",
         "type": "string",
         "required": true,
-        "default": ""
+        "default": "PLC Jalousie Controller"
+      },
+      "ipAddress": {
+        "title": "PLC IP Address",
+        "type": "string",
+        "format": "ipv4",
+        "required": true,
+        "default": "192.168.1.100"
       },
       "port": {
-        "title": "port",
-        "type": "number",
+        "title": "PLC Port",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535,
+        "required": true,
+        "default": 4840
+      },
+      "pollingInterval": {
+        "title": "Polling Interval (seconds)",
+        "type": "integer",
+        "minimum": 5,
+        "maximum": 300,
+        "default": 10,
+        "description": "How often to poll the PLC for state updates (in seconds)"
+      },
+      "commandTimeout": {
+        "title": "Command Timeout (ms)",
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 30000,
+        "default": 5000,
+        "description": "Timeout for PLC commands in milliseconds"
+      },
+      "debug": {
+        "title": "Debug Mode",
+        "type": "boolean",
         "required": false,
-        "default": 5010
+        "default": false,
+        "description": "Enable additional logging for debugging"
       }
     }
   }
