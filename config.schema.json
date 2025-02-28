@@ -1,5 +1,5 @@
 {
-  "pluginAlias": "PlcJalousiePlatform",
+  "pluginAlias": "homebridge-platform-tecomat",
   "pluginType": "platform",
   "singular": true,
   "schema": {
