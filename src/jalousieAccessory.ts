@@ -1,4 +1,4 @@
-import { PlatformAccessory, Service, Characteristic, Logger } from 'homebridge';
+import { PlatformAccessory, Service, Logger } from 'homebridge';
 import { PlcJalousiePlatform } from './platform';
 import * as net from 'net';
 
