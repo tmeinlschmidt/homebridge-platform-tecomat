@@ -13,14 +13,26 @@ export interface JalousieInfo {
 
 /**
  * JalousieAccessory - represents a single blind/shutter device
+ * Implements the HomeKit WindowCovering service
  */
 export class JalousieAccessory {
   private service: Service;
-
-  private currentPosition = 0;
-  private targetPosition = 0;
-  private positionState = 2; // 0 = going to min, 1 = going to max, 2 = stopped
   private updateInterval?: NodeJS.Timeout;
+
+  // Homebridge characteristics
+  private readonly POSITION_STATE = {
+    DECREASING: 0,
+    INCREASING: 1,
+    STOPPED: 2
+  };
+
+  // State variables
+  private currentPosition = 100;  // HomeKit: 0 (fully closed) to 100 (fully open)
+  private targetPosition = 100;   // HomeKit: 0 (fully closed) to 100 (fully open)
+  private positionState = this.POSITION_STATE.STOPPED;
+  private moving = false;
+  private lastCommandTime = 0;
+  private operationTimeout?: NodeJS.Timeout;
 
   constructor(
     private readonly platform: PlcJalousiePlatform,
@@ -36,33 +48,51 @@ export class JalousieAccessory {
     // Set accessory information
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'PLC Jalousie')
-      .setCharacteristic(this.platform.Characteristic.Model, 'PLC Jalousie')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, registerPath);
+      .setCharacteristic(this.platform.Characteristic.Model, 'PLC Jalousie Controller')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, this.registerPath);
 
     // Set up name for the accessory
-    this.service.setCharacteristic(this.platform.Characteristic.Name, jalousieInfo.name);
+    this.service.setCharacteristic(this.platform.Characteristic.Name, this.jalousieInfo.name);
 
-    // Register handlers for the Current Position Characteristic
+    // Register handlers for the Required Characteristics
+
+    // 1. Current Position (Required)
     this.service.getCharacteristic(this.platform.Characteristic.CurrentPosition)
       .onGet(this.handleCurrentPositionGet.bind(this));
 
-    // Register handlers for the Target Position Characteristic
+    // 2. Target Position (Required)
     this.service.getCharacteristic(this.platform.Characteristic.TargetPosition)
       .onGet(this.handleTargetPositionGet.bind(this))
       .onSet(this.handleTargetPositionSet.bind(this));
 
-    // Register handlers for the Position State Characteristic
+    // 3. Position State (Required)
     this.service.getCharacteristic(this.platform.Characteristic.PositionState)
       .onGet(this.handlePositionStateGet.bind(this));
+
+    // 4. Hold Position (Optional) - useful for stopping the jalousie mid-movement
+    this.service.getCharacteristic(this.platform.Characteristic.HoldPosition)
+      .onSet(this.handleHoldPositionSet.bind(this));
+
+    // Get initial position
+    this.updateCurrentPosition()
+      .then(() => {
+        this.targetPosition = this.currentPosition;
+        this.service.updateCharacteristic(
+          this.platform.Characteristic.TargetPosition,
+          this.targetPosition
+        );
+      })
+      .catch(err => {
+        this.log.error(`Failed to get initial position for ${this.jalousieInfo.name}: ${err}`);
+      });
 
     // Update position periodically
     const pollingInterval = this.platform.config.pollingInterval || 10;
     this.updateInterval = setInterval(() => {
-      this.updateCurrentPosition();
+      this.updateCurrentPosition().catch(err => {
+        this.log.debug(`Error updating position for ${this.jalousieInfo.name}: ${err}`);
+      });
     }, pollingInterval * 1000); // Convert to milliseconds
-
-    // Initial position update
-    this.updateCurrentPosition();
 
     this.log.info(`Jalousie accessory initialized: ${jalousieInfo.name}`);
   }
@@ -74,25 +104,24 @@ export class JalousieAccessory {
     if (this.updateInterval) {
       clearInterval(this.updateInterval);
     }
+    if (this.operationTimeout) {
+      clearTimeout(this.operationTimeout);
+    }
     this.log.info(`Jalousie accessory removed: ${this.jalousieInfo.name}`);
   }
 
   /**
    * Handle requests to get the current position
+   * @returns current position (0-100)
    */
   async handleCurrentPositionGet() {
-    try {
-      await this.updateCurrentPosition();
-      this.log.debug(`Get Current Position for ${this.jalousieInfo.name}: ${this.currentPosition}%`);
-      return this.currentPosition;
-    } catch (error) {
-      this.log.error(`Error getting position for ${this.jalousieInfo.name}: ${error}`);
-      return this.currentPosition;
-    }
+    this.log.debug(`Get Current Position for ${this.jalousieInfo.name}: ${this.currentPosition}%`);
+    return this.currentPosition;
   }
 
   /**
    * Handle requests to get the target position
+   * @returns target position (0-100)
    */
   handleTargetPositionGet() {
     this.log.debug(`Get Target Position for ${this.jalousieInfo.name}: ${this.targetPosition}%`);
@@ -101,52 +130,160 @@ export class JalousieAccessory {
 
   /**
    * Handle requests to set the target position
+   * @param value target position (0-100)
    */
   async handleTargetPositionSet(value) {
-    this.targetPosition = value as number;
+    const newTargetPosition = value as number;
+
+    // If the target position hasn't changed, do nothing
+    if (newTargetPosition === this.targetPosition) {
+      return;
+    }
+
+    this.targetPosition = newTargetPosition;
     this.log.info(`Set Target Position for ${this.jalousieInfo.name}: ${this.targetPosition}%`);
 
     try {
-      // Determine if we're going up or down
+      // Cancel any existing operation timeout
+      if (this.operationTimeout) {
+        clearTimeout(this.operationTimeout);
+      }
+
+      // Determine direction and set position state
       if (this.targetPosition > this.currentPosition) {
-        this.positionState = 1; // Going up
+        this.positionState = this.POSITION_STATE.INCREASING;
+        this.service.updateCharacteristic(
+          this.platform.Characteristic.PositionState,
+          this.POSITION_STATE.INCREASING
+        );
+
+        // Send command to move up - only set TRUE to move
         await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
-        await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'FALSE');
         this.log.debug(`${this.jalousieInfo.name} - Moving UP`);
-      } else if (this.targetPosition < this.currentPosition) {
-        this.positionState = 0; // Going down
-        await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
-        await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'FALSE');
-        this.log.debug(`${this.jalousieInfo.name} - Moving DOWN`);
       } else {
-        this.positionState = 2; // Stopped
-        await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'FALSE');
-        await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'FALSE');
-        this.log.debug(`${this.jalousieInfo.name} - Already at target position`);
+        this.positionState = this.POSITION_STATE.DECREASING;
+        this.service.updateCharacteristic(
+          this.platform.Characteristic.PositionState,
+          this.POSITION_STATE.DECREASING
+        );
+
+        // Send command to move down - only set TRUE to move
+        await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+        this.log.debug(`${this.jalousieInfo.name} - Moving DOWN`);
       }
 
-      // Update the service
-      this.service.updateCharacteristic(this.platform.Characteristic.PositionState, this.positionState);
+      this.moving = true;
+      this.lastCommandTime = Date.now();
 
-      // If we want to step-by-step control for precise positioning
-      if (this.jalousieInfo.hasStepControl && Math.abs(this.targetPosition - this.currentPosition) <= 10) {
-        // Use step control for precise movements
-        await this.sendCommand(`SET:${this.registerPath}.GTSAP1_SHUTTER_ROTUP_CONTROL`,
-          this.targetPosition > this.currentPosition ? 'TRUE' : 'FALSE');
-        this.log.debug(`${this.jalousieInfo.name} - Using step control for precise positioning`);
-      }
+      // Set a timeout to stop the operation after a reasonable time
+      // Calculate estimated time based on distance to move
+      const positionDifference = Math.abs(this.targetPosition - this.currentPosition);
+      const estimatedTime = Math.max(5000, positionDifference * 300); // 300ms per 1% movement, minimum 5 seconds
+
+      this.operationTimeout = setTimeout(() => {
+        // Force stop if we seem to be taking too long
+        if (this.moving) {
+          this.log.debug(`Operation timeout for ${this.jalousieInfo.name}, stopping movement`);
+          this.stopMovement().catch(err => {
+            this.log.error(`Error stopping movement for ${this.jalousieInfo.name}: ${err}`);
+          });
+        }
+      }, estimatedTime);
+
+      // Update more frequently during movement
+      this.increasePollRateDuringMovement();
     } catch (error) {
       this.log.error(`Error setting position for ${this.jalousieInfo.name}: ${error}`);
+      // Reset to stopped state on error
+      this.positionState = this.POSITION_STATE.STOPPED;
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.PositionState,
+        this.POSITION_STATE.STOPPED
+      );
+      this.moving = false;
     }
   }
 
   /**
    * Handle requests to get the position state
+   * @returns position state (0=DECREASING, 1=INCREASING, 2=STOPPED)
    */
   handlePositionStateGet() {
     const stateNames = ['DECREASING', 'INCREASING', 'STOPPED'];
     this.log.debug(`Get Position State for ${this.jalousieInfo.name}: ${stateNames[this.positionState]}`);
     return this.positionState;
+  }
+
+  /**
+   * Handle requests to hold current position (stop movement)
+   */
+  async handleHoldPositionSet(value) {
+    if (value) {
+      this.log.info(`Hold position requested for ${this.jalousieInfo.name}`);
+      await this.stopMovement();
+    }
+  }
+
+  /**
+   * Stop jalousie movement and update state
+   */
+  private async stopMovement() {
+    try {
+      // If we were increasing, we only need to set WEBUP to FALSE
+      if (this.positionState === this.POSITION_STATE.INCREASING) {
+        await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'FALSE');
+      }
+      // If we were decreasing, we only need to set WEBDW to FALSE
+      else if (this.positionState === this.POSITION_STATE.DECREASING) {
+        await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'FALSE');
+      }
+
+      // Update state
+      this.moving = false;
+      this.positionState = this.POSITION_STATE.STOPPED;
+
+      // Update target position to current position
+      await this.updateCurrentPosition();
+      this.targetPosition = this.currentPosition;
+
+      // Update HomeKit characteristics
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.PositionState,
+        this.POSITION_STATE.STOPPED
+      );
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.TargetPosition,
+        this.targetPosition
+      );
+
+      this.log.debug(`${this.jalousieInfo.name} - Movement stopped`);
+    } catch (error) {
+      this.log.error(`Error stopping movement for ${this.jalousieInfo.name}: ${error}`);
+    }
+  }
+
+  /**
+   * Increase polling rate temporarily during movement
+   */
+  private increasePollRateDuringMovement() {
+    const quickUpdateInterval = 1000; // 1 second during movement
+    const pollCount = 30; // Poll more frequently for 30 seconds
+    let count = 0;
+
+    const quickPoll = setInterval(async () => {
+      try {
+        await this.updateCurrentPosition();
+        count++;
+
+        // If we've reached target position or exceeded poll count, stop quick polling
+        if (!this.moving || this.currentPosition === this.targetPosition || count >= pollCount) {
+          clearInterval(quickPoll);
+        }
+      } catch (error) {
+        this.log.debug(`Error during quick polling for ${this.jalousieInfo.name}: ${error}`);
+        clearInterval(quickPoll);
+      }
+    }, quickUpdateInterval);
   }
 
   /**
@@ -167,25 +304,64 @@ export class JalousieAccessory {
             this.currentPosition = newPosition;
 
             // Update HomeKit
-            this.service.updateCharacteristic(this.platform.Characteristic.CurrentPosition, this.currentPosition);
+            this.service.updateCharacteristic(
+              this.platform.Characteristic.CurrentPosition,
+              this.currentPosition
+            );
+
+            // Check if we are moving and need to handle reaching target position
+            this.handlePositionUpdate();
           }
 
-          // If we've reached the target position, update state to stopped
-          if (this.currentPosition === this.targetPosition && this.positionState !== 2) {
-            this.positionState = 2; // Stopped
-            this.service.updateCharacteristic(this.platform.Characteristic.PositionState, this.positionState);
-
-            // Ensure controls are turned off
-            await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'FALSE');
-            await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'FALSE');
-            this.log.debug(`${this.jalousieInfo.name} - Target position reached, stopped at ${this.currentPosition}%`);
-          }
+          return this.currentPosition;
         }
       }
+      return this.currentPosition;
     } catch (error) {
       this.log.error(`Error updating position for ${this.jalousieInfo.name}: ${error}`);
+      throw error;
     }
   }
+
+  /**
+   * Handle position updates and state transitions
+   */
+  private async handlePositionUpdate() {
+    // If not currently marked as moving, don't do anything
+    if (!this.moving) {
+      return;
+    }
+
+    // Check if we've reached the target position (or passed it)
+    if ((this.positionState === this.POSITION_STATE.INCREASING && this.currentPosition >= this.targetPosition) ||
+        (this.positionState === this.POSITION_STATE.DECREASING && this.currentPosition <= this.targetPosition) ||
+        this.currentPosition === this.targetPosition) {
+
+      // Stop the movement
+      await this.stopMovement();
+      return;
+    }
+
+    // Check if we should be moving but position hasn't changed in a while
+    const timeElapsed = Date.now() - this.lastCommandTime;
+    if (timeElapsed > 10000) { // 10 seconds with no movement
+      const hasPositionChanged =
+        (this.positionState === this.POSITION_STATE.INCREASING && this.currentPosition > this.lastKnownPosition) ||
+        (this.positionState === this.POSITION_STATE.DECREASING && this.currentPosition < this.lastKnownPosition);
+
+      if (!hasPositionChanged) {
+        this.log.debug(`No movement detected for ${this.jalousieInfo.name} after 10 seconds, stopping`);
+        await this.stopMovement();
+      } else {
+        // Reset timer as movement is happening
+        this.lastCommandTime = Date.now();
+        this.lastKnownPosition = this.currentPosition;
+      }
+    }
+  }
+
+  // Track the last known position for movement detection
+  private lastKnownPosition = 0;
 
   /**
    * Send a command to the PLC and get the response
@@ -199,7 +375,9 @@ export class JalousieAccessory {
       client.connect(this.platform.config.port, this.platform.config.ipAddress, () => {
         const fullCommand = value ? `${command},${value}\n` : `${command}\n`;
         client.write(fullCommand);
-        this.log.debug(`Sent command: ${fullCommand.trim()}`);
+        if (this.platform.config.debug) {
+          this.log.debug(`Sent command: ${fullCommand.trim()}`);
+        }
       });
 
       client.on('data', (data) => {
@@ -210,7 +388,9 @@ export class JalousieAccessory {
       });
 
       client.on('close', () => {
-        this.log.debug(`Response for ${command}: ${responseData.trim()}`);
+        if (this.platform.config.debug) {
+          this.log.debug(`Response for ${command}: ${responseData.trim()}`);
+        }
         resolve(responseData.trim());
       });
 
