@@ -2,7 +2,7 @@
   "private": true,
   "displayName": "Tecomat bridge",
   "name": "homebridge-platform-tecomat",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "A simple bridge to tecomat iFoxtrot controls",
   "license": "Apache-2.0",
   "repository": {
