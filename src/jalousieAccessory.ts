@@ -194,7 +194,13 @@ export class JalousieAccessory {
     }
 
     this.targetPosition = newTargetPosition;
-    this.log.info(`Set Target Position for ${this.jalousieInfo.name}: ${this.targetPosition}%`);
+
+    // Convert HomeKit position to PLC position (invert the value)
+    // HomeKit: 0 = closed, 100 = open
+    // PLC: 100 = closed, 0 = open
+    const plcTargetPosition = 100 - this.targetPosition;
+
+    this.log.info(`Set Target Position for ${this.jalousieInfo.name}: ${this.targetPosition}% (PLC target: ${plcTargetPosition})`);
 
     try {
       // Cancel any existing operation timeout
@@ -205,15 +211,19 @@ export class JalousieAccessory {
       // First stop any current movement
       await this.stopMovement();
 
+      // Get current PLC position (inverted from HomeKit)
+      const plcCurrentPosition = 100 - this.currentPosition;
+
       // Calculate the movement time based on position difference and upDownTime
-      const positionDifference = Math.abs(this.targetPosition - this.currentPosition);
+      const positionDifference = Math.abs(plcTargetPosition - plcCurrentPosition);
       const movementPercentage = positionDifference / 100;
       const estimatedTime = Math.ceil(this.upDownTime * movementPercentage);
 
       this.log.debug(`${this.jalousieInfo.name} - Movement calculation: ${positionDifference}% movement, estimated ${estimatedTime}ms`);
 
       // Determine direction and set position state
-      if (this.targetPosition > this.currentPosition) {
+      if (plcTargetPosition < plcCurrentPosition) {
+        // In PLC terms, smaller position value means moving up/opening
         this.positionState = this.POSITION_STATE.INCREASING;
         this.service.updateCharacteristic(
           this.platform.Characteristic.PositionState,
@@ -227,6 +237,7 @@ export class JalousieAccessory {
         }
         this.log.debug(`${this.jalousieInfo.name} - Moving UP for ${estimatedTime}ms`);
       } else {
+        // In PLC terms, larger position value means moving down/closing
         this.positionState = this.POSITION_STATE.DECREASING;
         this.service.updateCharacteristic(
           this.platform.Characteristic.PositionState,
@@ -381,11 +392,16 @@ export class JalousieAccessory {
         // Parse response to get position value
         const match = positionResponse.match(/GET:.*\.POSIT,(\d+)/);
         if (match && match[1]) {
-          const newPosition = parseInt(match[1]);
+          const plcPosition = parseInt(match[1]);
+
+          // Convert PLC position to HomeKit position (invert the value)
+          // PLC: 100 = closed, 0 = open
+          // HomeKit: 0 = closed, 100 = open
+          const newPosition = 100 - plcPosition;
 
           // Only update and log if the position has changed
           if (newPosition !== this.currentPosition) {
-            this.log.debug(`Position update for ${this.jalousieInfo.name}: ${newPosition}%`);
+            this.log.debug(`Position update for ${this.jalousieInfo.name}: ${newPosition}% (PLC POSIT: ${plcPosition})`);
             this.currentPosition = newPosition;
 
             // Update HomeKit
@@ -443,7 +459,7 @@ export class JalousieAccessory {
 
       if (isMovingUp) {
         if (this.positionState !== this.POSITION_STATE.INCREASING) {
-          this.log.debug(`${this.jalousieInfo.name} - Movement detected as UP`);
+          this.log.debug(`${this.jalousieInfo.name} - Movement detected as UP (OPENING)`);
           this.positionState = this.POSITION_STATE.INCREASING;
           this.moving = true;
           this.service.updateCharacteristic(
@@ -454,7 +470,7 @@ export class JalousieAccessory {
       } else {
         // Must be moving down
         if (this.positionState !== this.POSITION_STATE.DECREASING) {
-          this.log.debug(`${this.jalousieInfo.name} - Movement detected as DOWN`);
+          this.log.debug(`${this.jalousieInfo.name} - Movement detected as DOWN (CLOSING)`);
           this.positionState = this.POSITION_STATE.DECREASING;
           this.moving = true;
           this.service.updateCharacteristic(
