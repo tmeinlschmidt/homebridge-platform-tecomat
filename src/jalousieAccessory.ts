@@ -9,6 +9,7 @@ export interface JalousieInfo {
   name: string;
   blockPath: string;
   hasStepControl: boolean;
+  upDownTime?: number; // Time in milliseconds for full movement
 }
 
 /**
@@ -18,6 +19,7 @@ export interface JalousieInfo {
 export class JalousieAccessory {
   private service: Service;
   private updateInterval?: NodeJS.Timeout;
+  private operationTimeout?: NodeJS.Timeout;
 
   // Homebridge characteristics
   private readonly POSITION_STATE = {
@@ -31,8 +33,8 @@ export class JalousieAccessory {
   private targetPosition = 100;   // HomeKit: 0 (fully closed) to 100 (fully open)
   private positionState = this.POSITION_STATE.STOPPED;
   private moving = false;
-  private lastCommandTime = 0;
-  private operationTimeout?: NodeJS.Timeout;
+  private upDownTime = 0; // Time in milliseconds for full movement
+  private lastKnownPosition = 0;
 
   constructor(
     private readonly platform: PlcJalousiePlatform,
@@ -73,28 +75,73 @@ export class JalousieAccessory {
     this.service.getCharacteristic(this.platform.Characteristic.HoldPosition)
       .onSet(this.handleHoldPositionSet.bind(this));
 
-    // Get initial position
-    this.updateCurrentPosition()
-      .then(() => {
-        this.targetPosition = this.currentPosition;
-        this.service.updateCharacteristic(
-          this.platform.Characteristic.TargetPosition,
-          this.targetPosition
-        );
-      })
-      .catch(err => {
-        this.log.error(`Failed to get initial position for ${this.jalousieInfo.name}: ${err}`);
-      });
+    // Initialize and get properties
+    this.initialize();
 
     // Update position periodically
     const pollingInterval = this.platform.config.pollingInterval || 10;
     this.updateInterval = setInterval(() => {
-      this.updateCurrentPosition().catch(err => {
+      this.updateCurrentPositionAndState().catch(err => {
         this.log.debug(`Error updating position for ${this.jalousieInfo.name}: ${err}`);
       });
     }, pollingInterval * 1000); // Convert to milliseconds
 
     this.log.info(`Jalousie accessory initialized: ${jalousieInfo.name}`);
+  }
+
+  /**
+   * Initialize the accessory by getting properties from PLC
+   */
+  private async initialize() {
+    try {
+      // First, get the up-down time if not already provided
+      if (!this.jalousieInfo.upDownTime) {
+        await this.fetchUpDownTime();
+      } else {
+        this.upDownTime = this.jalousieInfo.upDownTime;
+        this.log.debug(`Using provided upDownTime for ${this.jalousieInfo.name}: ${this.upDownTime}ms`);
+      }
+
+      // Then get current position and state
+      await this.updateCurrentPositionAndState();
+      this.targetPosition = this.currentPosition;
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.TargetPosition,
+        this.targetPosition
+      );
+
+      this.log.info(`${this.jalousieInfo.name} initialized at position ${this.currentPosition}%, upDownTime: ${this.upDownTime}ms`);
+    } catch (err) {
+      this.log.error(`Failed to initialize ${this.jalousieInfo.name}: ${err}`);
+    }
+  }
+
+  /**
+   * Fetch the UPDWTIME property from the PLC
+   */
+  private async fetchUpDownTime() {
+    try {
+      const response = await this.sendCommand(`GET:${this.registerPath}.UPDWTIME`, '');
+      if (response) {
+        // Parse response to get up-down time value
+        const match = response.match(/GET:.*\.UPDWTIME,(\d+)/);
+        if (match && match[1]) {
+          this.upDownTime = parseInt(match[1]);
+          this.log.info(`Fetched upDownTime for ${this.jalousieInfo.name}: ${this.upDownTime}ms`);
+          return this.upDownTime;
+        }
+      }
+
+      // If we couldn't get the value, use a default
+      this.upDownTime = 30000; // Default 30 seconds for full movement
+      this.log.warn(`Could not fetch upDownTime for ${this.jalousieInfo.name}, using default: ${this.upDownTime}ms`);
+      return this.upDownTime;
+    } catch (error) {
+      this.log.error(`Error fetching upDownTime for ${this.jalousieInfo.name}: ${error}`);
+      // Use default value in case of error
+      this.upDownTime = 30000;
+      return this.upDownTime;
+    }
   }
 
   /**
@@ -115,8 +162,14 @@ export class JalousieAccessory {
    * @returns current position (0-100)
    */
   async handleCurrentPositionGet() {
-    this.log.debug(`Get Current Position for ${this.jalousieInfo.name}: ${this.currentPosition}%`);
-    return this.currentPosition;
+    try {
+      await this.updateCurrentPosition();
+      this.log.debug(`Get Current Position for ${this.jalousieInfo.name}: ${this.currentPosition}%`);
+      return this.currentPosition;
+    } catch (error) {
+      this.log.error(`Error getting position for ${this.jalousieInfo.name}: ${error}`);
+      return this.currentPosition;
+    }
   }
 
   /**
@@ -149,6 +202,16 @@ export class JalousieAccessory {
         clearTimeout(this.operationTimeout);
       }
 
+      // First stop any current movement
+      await this.stopMovement();
+
+      // Calculate the movement time based on position difference and upDownTime
+      const positionDifference = Math.abs(this.targetPosition - this.currentPosition);
+      const movementPercentage = positionDifference / 100;
+      const estimatedTime = Math.ceil(this.upDownTime * movementPercentage);
+
+      this.log.debug(`${this.jalousieInfo.name} - Movement calculation: ${positionDifference}% movement, estimated ${estimatedTime}ms`);
+
       // Determine direction and set position state
       if (this.targetPosition > this.currentPosition) {
         this.positionState = this.POSITION_STATE.INCREASING;
@@ -157,9 +220,12 @@ export class JalousieAccessory {
           this.POSITION_STATE.INCREASING
         );
 
-        // Send command to move up - only set TRUE to move
-        await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
-        this.log.debug(`${this.jalousieInfo.name} - Moving UP`);
+        // Send command to move up - only send one command
+        const response = await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
+        if (!response.includes("DIFF:") && !response.includes(",1")) {
+          throw new Error(`Failed to start up movement, response: ${response}`);
+        }
+        this.log.debug(`${this.jalousieInfo.name} - Moving UP for ${estimatedTime}ms`);
       } else {
         this.positionState = this.POSITION_STATE.DECREASING;
         this.service.updateCharacteristic(
@@ -167,31 +233,24 @@ export class JalousieAccessory {
           this.POSITION_STATE.DECREASING
         );
 
-        // Send command to move down - only set TRUE to move
-        await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
-        this.log.debug(`${this.jalousieInfo.name} - Moving DOWN`);
+        // Send command to move down - only send one command
+        const response = await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+        if (!response.includes("DIFF:") && !response.includes(",1")) {
+          throw new Error(`Failed to start down movement, response: ${response}`);
+        }
+        this.log.debug(`${this.jalousieInfo.name} - Moving DOWN for ${estimatedTime}ms`);
       }
 
       this.moving = true;
-      this.lastCommandTime = Date.now();
 
-      // Set a timeout to stop the operation after a reasonable time
-      // Calculate estimated time based on distance to move
-      const positionDifference = Math.abs(this.targetPosition - this.currentPosition);
-      const estimatedTime = Math.max(5000, positionDifference * 300); // 300ms per 1% movement, minimum 5 seconds
+      // Set a timeout to stop the movement after the calculated time
+      this.operationTimeout = setTimeout(async () => {
+        this.log.debug(`${this.jalousieInfo.name} - Timed movement complete, stopping`);
+        await this.stopMovement();
 
-      this.operationTimeout = setTimeout(() => {
-        // Force stop if we seem to be taking too long
-        if (this.moving) {
-          this.log.debug(`Operation timeout for ${this.jalousieInfo.name}, stopping movement`);
-          this.stopMovement().catch(err => {
-            this.log.error(`Error stopping movement for ${this.jalousieInfo.name}: ${err}`);
-          });
-        }
+        // Update position after movement
+        await this.updateCurrentPositionAndState();
       }, estimatedTime);
-
-      // Update more frequently during movement
-      this.increasePollRateDuringMovement();
     } catch (error) {
       this.log.error(`Error setting position for ${this.jalousieInfo.name}: ${error}`);
       // Reset to stopped state on error
@@ -208,10 +267,18 @@ export class JalousieAccessory {
    * Handle requests to get the position state
    * @returns position state (0=DECREASING, 1=INCREASING, 2=STOPPED)
    */
-  handlePositionStateGet() {
-    const stateNames = ['DECREASING', 'INCREASING', 'STOPPED'];
-    this.log.debug(`Get Position State for ${this.jalousieInfo.name}: ${stateNames[this.positionState]}`);
-    return this.positionState;
+  async handlePositionStateGet() {
+    try {
+      // Get the latest state before returning
+      await this.updateMovementState();
+
+      const stateNames = ['DECREASING', 'INCREASING', 'STOPPED'];
+      this.log.debug(`Get Position State for ${this.jalousieInfo.name}: ${stateNames[this.positionState]}`);
+      return this.positionState;
+    } catch (error) {
+      this.log.error(`Error getting position state: ${error}`);
+      return this.positionState;
+    }
   }
 
   /**
@@ -220,7 +287,17 @@ export class JalousieAccessory {
   async handleHoldPositionSet(value) {
     if (value) {
       this.log.info(`Hold position requested for ${this.jalousieInfo.name}`);
+
+      // Cancel any operation timeout
+      if (this.operationTimeout) {
+        clearTimeout(this.operationTimeout);
+        this.operationTimeout = undefined;
+      }
+
       await this.stopMovement();
+
+      // Update current position and state
+      await this.updateCurrentPositionAndState();
     }
   }
 
@@ -229,61 +306,69 @@ export class JalousieAccessory {
    */
   private async stopMovement() {
     try {
-      // If we were increasing, we only need to set WEBUP to FALSE
+      let response;
+      // If we were increasing, we need to set WEBUP to FALSE
       if (this.positionState === this.POSITION_STATE.INCREASING) {
-        await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'FALSE');
+        response = await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'FALSE');
+        if (!response.includes("DIFF:") && !response.includes(",0")) {
+          this.log.warn(`Unexpected response when stopping up movement: ${response}`);
+        }
       }
-      // If we were decreasing, we only need to set WEBDW to FALSE
+      // If we were decreasing, we need to set WEBDW to FALSE
       else if (this.positionState === this.POSITION_STATE.DECREASING) {
-        await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'FALSE');
+        response = await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'FALSE');
+        if (!response.includes("DIFF:") && !response.includes(",0")) {
+          this.log.warn(`Unexpected response when stopping down movement: ${response}`);
+        }
       }
 
       // Update state
       this.moving = false;
       this.positionState = this.POSITION_STATE.STOPPED;
 
-      // Update target position to current position
-      await this.updateCurrentPosition();
-      this.targetPosition = this.currentPosition;
-
       // Update HomeKit characteristics
       this.service.updateCharacteristic(
         this.platform.Characteristic.PositionState,
         this.POSITION_STATE.STOPPED
       );
+
+      // Get current position after stopping
+      await this.updateCurrentPosition();
+
+      // Update target to current position if we're at a stable state
+      this.targetPosition = this.currentPosition;
       this.service.updateCharacteristic(
         this.platform.Characteristic.TargetPosition,
         this.targetPosition
       );
 
-      this.log.debug(`${this.jalousieInfo.name} - Movement stopped`);
+      this.log.debug(`${this.jalousieInfo.name} - Movement stopped at position ${this.currentPosition}%`);
     } catch (error) {
       this.log.error(`Error stopping movement for ${this.jalousieInfo.name}: ${error}`);
     }
   }
 
+  // This method is no longer needed as we're using a timeout based on UPDWTIME
+
   /**
-   * Increase polling rate temporarily during movement
+   * Update both the current position and movement state from the PLC
    */
-  private increasePollRateDuringMovement() {
-    const quickUpdateInterval = 1000; // 1 second during movement
-    const pollCount = 30; // Poll more frequently for 30 seconds
-    let count = 0;
+  async updateCurrentPositionAndState() {
+    try {
+      // First get the position
+      await this.updateCurrentPosition();
 
-    const quickPoll = setInterval(async () => {
-      try {
-        await this.updateCurrentPosition();
-        count++;
+      // Then check the movement state
+      await this.updateMovementState();
 
-        // If we've reached target position or exceeded poll count, stop quick polling
-        if (!this.moving || this.currentPosition === this.targetPosition || count >= pollCount) {
-          clearInterval(quickPoll);
-        }
-      } catch (error) {
-        this.log.debug(`Error during quick polling for ${this.jalousieInfo.name}: ${error}`);
-        clearInterval(quickPoll);
-      }
-    }, quickUpdateInterval);
+      return {
+        position: this.currentPosition,
+        state: this.positionState
+      };
+    } catch (error) {
+      this.log.error(`Error updating state for ${this.jalousieInfo.name}: ${error}`);
+      throw error;
+    }
   }
 
   /**
@@ -308,9 +393,6 @@ export class JalousieAccessory {
               this.platform.Characteristic.CurrentPosition,
               this.currentPosition
             );
-
-            // Check if we are moving and need to handle reaching target position
-            this.handlePositionUpdate();
           }
 
           return this.currentPosition;
@@ -324,44 +406,70 @@ export class JalousieAccessory {
   }
 
   /**
-   * Handle position updates and state transitions
+   * Update the movement state from the PLC using GTSAP1_SHUTTER properties
    */
-  private async handlePositionUpdate() {
-    // If not currently marked as moving, don't do anything
-    if (!this.moving) {
-      return;
-    }
+  async updateMovementState() {
+    try {
+      // Check if running using GTSAP1_SHUTTER_run
+      const runResponse = await this.sendCommand(`GET:${this.registerPath}.GTSAP1_SHUTTER_run`, '');
+      const isRunning = runResponse.includes(',1') || runResponse.includes(',TRUE');
 
-    // Check if we've reached the target position (or passed it)
-    if ((this.positionState === this.POSITION_STATE.INCREASING && this.currentPosition >= this.targetPosition) ||
-        (this.positionState === this.POSITION_STATE.DECREASING && this.currentPosition <= this.targetPosition) ||
-        this.currentPosition === this.targetPosition) {
+      // If not running, set to stopped
+      if (!isRunning) {
+        if (this.positionState !== this.POSITION_STATE.STOPPED) {
+          this.log.debug(`${this.jalousieInfo.name} - Movement detected as STOPPED`);
+          this.positionState = this.POSITION_STATE.STOPPED;
+          this.moving = false;
+          this.service.updateCharacteristic(
+            this.platform.Characteristic.PositionState,
+            this.POSITION_STATE.STOPPED
+          );
 
-      // Stop the movement
-      await this.stopMovement();
-      return;
-    }
-
-    // Check if we should be moving but position hasn't changed in a while
-    const timeElapsed = Date.now() - this.lastCommandTime;
-    if (timeElapsed > 10000) { // 10 seconds with no movement
-      const hasPositionChanged =
-        (this.positionState === this.POSITION_STATE.INCREASING && this.currentPosition > this.lastKnownPosition) ||
-        (this.positionState === this.POSITION_STATE.DECREASING && this.currentPosition < this.lastKnownPosition);
-
-      if (!hasPositionChanged) {
-        this.log.debug(`No movement detected for ${this.jalousieInfo.name} after 10 seconds, stopping`);
-        await this.stopMovement();
-      } else {
-        // Reset timer as movement is happening
-        this.lastCommandTime = Date.now();
-        this.lastKnownPosition = this.currentPosition;
+          // If we reached a position close to target, update target to match current
+          if (Math.abs(this.currentPosition - this.targetPosition) <= 5) {
+            this.targetPosition = this.currentPosition;
+            this.service.updateCharacteristic(
+              this.platform.Characteristic.TargetPosition,
+              this.targetPosition
+            );
+          }
+        }
+        return this.positionState;
       }
+
+      // If running, check direction
+      const upResponse = await this.sendCommand(`GET:${this.registerPath}.GTSAP1_SHUTTER_up`, '');
+      const isMovingUp = upResponse.includes(',1') || upResponse.includes(',TRUE');
+
+      if (isMovingUp) {
+        if (this.positionState !== this.POSITION_STATE.INCREASING) {
+          this.log.debug(`${this.jalousieInfo.name} - Movement detected as UP`);
+          this.positionState = this.POSITION_STATE.INCREASING;
+          this.moving = true;
+          this.service.updateCharacteristic(
+            this.platform.Characteristic.PositionState,
+            this.POSITION_STATE.INCREASING
+          );
+        }
+      } else {
+        // Must be moving down
+        if (this.positionState !== this.POSITION_STATE.DECREASING) {
+          this.log.debug(`${this.jalousieInfo.name} - Movement detected as DOWN`);
+          this.positionState = this.POSITION_STATE.DECREASING;
+          this.moving = true;
+          this.service.updateCharacteristic(
+            this.platform.Characteristic.PositionState,
+            this.POSITION_STATE.DECREASING
+          );
+        }
+      }
+
+      return this.positionState;
+    } catch (error) {
+      this.log.error(`Error updating movement state for ${this.jalousieInfo.name}: ${error}`);
+      return this.positionState;
     }
   }
-
-  // Track the last known position for movement detection
-  private lastKnownPosition = 0;
 
   /**
    * Send a command to the PLC and get the response

@@ -164,10 +164,20 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
   }
 
   /**
-   * Check if the jalousie block has step control
+   * Check if the jalousie block has step control and other required properties
    */
-  private hasStepControl(listResponse: string, blockPath: string): boolean {
-    return listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_ROTUP_CONTROL`);
+  private hasRequiredProperties(listResponse: string, blockPath: string): {
+    hasStepControl: boolean;
+    hasRunProperty: boolean;
+    hasUpProperty: boolean;
+    hasDownProperty: boolean;
+  } {
+    return {
+      hasStepControl: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_ROTUP_CONTROL`),
+      hasRunProperty: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_run`),
+      hasUpProperty: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_up`),
+      hasDownProperty: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_down`)
+    };
   }
 
   /**
@@ -196,14 +206,28 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
           const name = await this.getJalousieName(blockPath);
           this.log.info(`Found jalousie: ${name} at path ${blockPath}`);
 
-          // Check if this jalousie has step control
-          const hasStepControl = this.hasStepControl(listResponse, blockPath);
+          // Check if this jalousie has required properties
+          const properties = this.hasRequiredProperties(listResponse, blockPath);
+
+          // Fetch the up-down time for this jalousie
+          let upDownTime: number | undefined;
+          try {
+            const response = await this.sendPlcCommand(`GET:${blockPath}.UPDWTIME`);
+            const match = response.match(/GET:.*\.UPDWTIME,(\d+)/);
+            if (match && match[1]) {
+              upDownTime = parseInt(match[1]);
+              this.log.info(`Jalousie ${name} has upDownTime: ${upDownTime}ms`);
+            }
+          } catch (error) {
+            this.log.warn(`Could not get UPDWTIME for ${name}: ${error}`);
+          }
 
           // Create jalousie info object
           const jalousieInfo: JalousieInfo = {
             name,
             blockPath,
-            hasStepControl,
+            hasStepControl: properties.hasStepControl,
+            upDownTime
           };
 
           // Generate a unique id for this jalousie
