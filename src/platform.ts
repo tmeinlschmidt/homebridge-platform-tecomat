@@ -1,200 +1,7 @@
 import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
+import { JalousieAccessory, JalousieInfo } from './jalousieAccessory';
 import * as net from 'net';
-
-/**
- * JalousieAccessory - represents a single blind/shutter device
- */
-class JalousieAccessory {
-  private service: Service;
-  private client: net.Socket;
-
-  private currentPosition = 0;
-  private targetPosition = 0;
-  private positionState = 2; // 0 = going to min, 1 = going to max, 2 = stopped
-
-  constructor(
-    private readonly platform: PlcJalousiePlatform,
-    private readonly accessory: PlatformAccessory,
-    private readonly registerPath: string,
-    private readonly jalousieInfo: JalousieInfo,
-  ) {
-    this.client = new net.Socket();
-
-    // Setup window covering service
-    this.service = this.accessory.getService(this.platform.Service.WindowCovering)
-      || this.accessory.addService(this.platform.Service.WindowCovering);
-
-    // Set accessory information
-    this.accessory.getService(this.platform.Service.AccessoryInformation)!
-      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'PLC Jalousie')
-      .setCharacteristic(this.platform.Characteristic.Model, 'PLC Jalousie')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, registerPath);
-
-    // Set up name for the accessory
-    this.service.setCharacteristic(this.platform.Characteristic.Name, jalousieInfo.name);
-
-    // Register handlers for the Current Position Characteristic
-    this.service.getCharacteristic(this.platform.Characteristic.CurrentPosition)
-      .onGet(this.handleCurrentPositionGet.bind(this));
-
-    // Register handlers for the Target Position Characteristic
-    this.service.getCharacteristic(this.platform.Characteristic.TargetPosition)
-      .onGet(this.handleTargetPositionGet.bind(this))
-      .onSet(this.handleTargetPositionSet.bind(this));
-
-    // Register handlers for the Position State Characteristic
-    this.service.getCharacteristic(this.platform.Characteristic.PositionState)
-      .onGet(this.handlePositionStateGet.bind(this));
-
-    // Update position periodically
-    setInterval(() => {
-      this.updateCurrentPosition();
-    }, 10000); // Update every 10 seconds
-  }
-
-  /**
-   * Handle requests to get the current position
-   */
-  async handleCurrentPositionGet() {
-    await this.updateCurrentPosition();
-    this.platform.log.debug('Get Current Position:', this.currentPosition);
-    return this.currentPosition;
-  }
-
-  /**
-   * Handle requests to get the target position
-   */
-  handleTargetPositionGet() {
-    this.platform.log.debug('Get Target Position:', this.targetPosition);
-    return this.targetPosition;
-  }
-
-  /**
-   * Handle requests to set the target position
-   */
-  async handleTargetPositionSet(value) {
-    this.targetPosition = value as number;
-    this.platform.log.debug('Set Target Position:', value);
-
-    // Determine if we're going up or down
-    if (this.targetPosition > this.currentPosition) {
-      this.positionState = 1; // Going up
-      await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
-      await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'FALSE');
-    } else if (this.targetPosition < this.currentPosition) {
-      this.positionState = 0; // Going down
-      await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
-      await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'FALSE');
-    } else {
-      this.positionState = 2; // Stopped
-      await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'FALSE');
-      await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'FALSE');
-    }
-
-    // Update the service
-    this.service.updateCharacteristic(this.platform.Characteristic.PositionState, this.positionState);
-
-    // If we want to step-by-step control for precise positioning
-    if (this.jalousieInfo.hasStepControl && Math.abs(this.targetPosition - this.currentPosition) <= 10) {
-      // Use step control for precise movements
-      await this.sendCommand(`SET:${this.registerPath}.GTSAP1_SHUTTER_ROTUP_CONTROL`,
-        this.targetPosition > this.currentPosition ? 'TRUE' : 'FALSE');
-    }
-  }
-
-  /**
-   * Handle requests to get the position state
-   */
-  handlePositionStateGet() {
-    this.platform.log.debug('Get Position State:', this.positionState);
-    return this.positionState;
-  }
-
-  /**
-   * Update the current position from the PLC
-   */
-  async updateCurrentPosition() {
-    try {
-      const positionResponse = await this.sendCommand(`GET:${this.registerPath}.POSIT`, '');
-      if (positionResponse) {
-        // Parse response to get position value
-        const match = positionResponse.match(/GET:.*\.POSIT,(\d+)/);
-        if (match && match[1]) {
-          this.currentPosition = parseInt(match[1]);
-
-          // If we've reached the target position, update state to stopped
-          if (this.currentPosition === this.targetPosition) {
-            this.positionState = 2; // Stopped
-            this.service.updateCharacteristic(this.platform.Characteristic.PositionState, this.positionState);
-
-            // Ensure controls are turned off
-            await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'FALSE');
-            await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'FALSE');
-          }
-
-          // Update HomeKit
-          this.service.updateCharacteristic(this.platform.Characteristic.CurrentPosition, this.currentPosition);
-        }
-      }
-    } catch (error) {
-      this.platform.log.error('Error updating position:', error);
-    }
-  }
-
-  /**
-   * Send a command to the PLC and get the response
-   */
-  async sendCommand(command: string, value: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const client = new net.Socket();
-      let responseData = '';
-
-      client.connect(this.platform.config.port, this.platform.config.ipAddress, () => {
-        this.platform.log.debug(`Connected to PLC for command: ${command}`);
-        if (value) {
-          client.write(`${command},${value}\n`);
-        } else {
-          client.write(`${command}\n`);
-        }
-      });
-
-      client.on('data', (data) => {
-        responseData += data.toString();
-        if (responseData.indexOf('\n') !== -1) {
-          client.end();
-        }
-      });
-
-      client.on('close', () => {
-        this.platform.log.debug(`Response for ${command}: ${responseData.trim()}`);
-        resolve(responseData.trim());
-      });
-
-      client.on('error', (err) => {
-        this.platform.log.error(`Error for command ${command}: ${err.message}`);
-        reject(err);
-      });
-
-      // Set timeout
-      setTimeout(() => {
-        if (client.writable) {
-          client.end();
-          reject(new Error('Command timeout'));
-        }
-      }, 5000);
-    });
-  }
-}
-
-/**
- * Interface for jalousie information
- */
-interface JalousieInfo {
-  name: string;
-  blockPath: string;
-  hasStepControl: boolean;
-}
 
 /**
  * PLC Jalousie Platform
@@ -205,6 +12,11 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
 
   // this is used to track restored cached accessories
   public readonly accessories: PlatformAccessory[] = [];
+
+  // map to track jalousie accessory instances
+  private readonly jalousieAccessories: Map<string, JalousieAccessory> = new Map();
+
+  private discoveryInterval?: NodeJS.Timeout;
 
   constructor(
     public readonly log: Logger,
@@ -219,8 +31,33 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
     // to start discovery of new accessories.
     this.api.on('didFinishLaunching', () => {
       log.debug('Executed didFinishLaunching callback');
-      // run the method to discover / register your devices as accessories
+
+      // Run initial device discovery
       this.discoverDevices();
+
+      // Set up periodic rediscovery if enabled
+      const autoDiscoveryInterval = this.config.autoDiscoveryInterval as number;
+      if (autoDiscoveryInterval && autoDiscoveryInterval > 0) {
+        this.log.info(`Setting up automatic device rediscovery every ${autoDiscoveryInterval} minutes`);
+        this.discoveryInterval = setInterval(() => {
+          this.log.info('Running scheduled device rediscovery...');
+          this.discoverDevices();
+        }, autoDiscoveryInterval * 60 * 1000); // Convert minutes to milliseconds
+      }
+    });
+
+    // Clean up on shutdown
+    this.api.on('shutdown', () => {
+      if (this.discoveryInterval) {
+        clearInterval(this.discoveryInterval);
+      }
+
+      // Clean up all accessories
+      for (const accessory of this.jalousieAccessories.values()) {
+        accessory.teardown();
+      }
+
+      this.log.info('Platform shutdown');
     });
   }
 
@@ -242,9 +79,13 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
     return new Promise((resolve, reject) => {
       const client = new net.Socket();
       let responseData = '';
+      const discoveryTimeout = this.config.discoveryTimeout || 15000;
+      const debug = this.config.debug || false;
 
       client.connect(this.config.port, this.config.ipAddress, () => {
-        this.log.debug(`Connected to PLC for command: ${command}`);
+        if (debug) {
+          this.log.debug(`Connected to PLC for command: ${command}`);
+        }
         client.write(`${command}\n`);
       });
 
@@ -256,7 +97,9 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
       });
 
       client.on('close', () => {
-        this.log.debug(`Command completed: ${command}, response length: ${responseData.length}`);
+        if (debug) {
+          this.log.debug(`Command completed: ${command}, response length: ${responseData.length}`);
+        }
         resolve(responseData);
       });
 
@@ -269,9 +112,9 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
       setTimeout(() => {
         if (client.writable) {
           client.end();
-          reject(new Error('Command timeout'));
+          reject(new Error(`Discovery command timeout after ${discoveryTimeout}ms: ${command}`));
         }
-      }, 10000); // 10 second timeout for initial discovery
+      }, discoveryTimeout); // Longer timeout for initial discovery
     });
   }
 
@@ -343,6 +186,9 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
       const jalousieBlocks = this.parseJalousieBlocks(listResponse);
       this.log.info(`Found ${jalousieBlocks.length} jalousie blocks`);
 
+      // Keep track of discovered devices to remove stale ones
+      const activeAccessories = new Set<string>();
+
       // Process each jalousie block
       for (const blockPath of jalousieBlocks) {
         try {
@@ -362,6 +208,7 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
 
           // Generate a unique id for this jalousie
           const uuid = this.api.hap.uuid.generate(blockPath);
+          activeAccessories.add(uuid);
 
           // Check if an accessory with the same uuid has already been registered and restored from
           // the cached devices we stored in the `configureAccessory` method above
@@ -371,14 +218,19 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
             // Restore existing accessory
             this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
 
+            // Clean up any existing accessory instance
+            const existingInstance = this.jalousieAccessories.get(uuid);
+            if (existingInstance) {
+              existingInstance.teardown();
+            }
+
             // Update accessory context
             existingAccessory.context.jalousieInfo = jalousieInfo;
+            existingAccessory.displayName = name;
 
             // Create the accessory handler
-            new JalousieAccessory(this, existingAccessory, blockPath, jalousieInfo);
-
-            // Update accessory display name
-            existingAccessory.displayName = name;
+            const jalousieAccessory = new JalousieAccessory(this, existingAccessory, blockPath, jalousieInfo, this.log);
+            this.jalousieAccessories.set(uuid, jalousieAccessory);
           } else {
             // Create a new accessory
             this.log.info('Adding new accessory:', name);
@@ -390,7 +242,8 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
             accessory.context.jalousieInfo = jalousieInfo;
 
             // Create the accessory handler
-            new JalousieAccessory(this, accessory, blockPath, jalousieInfo);
+            const jalousieAccessory = new JalousieAccessory(this, accessory, blockPath, jalousieInfo, this.log);
+            this.jalousieAccessories.set(uuid, jalousieAccessory);
 
             // Register the accessory
             this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
@@ -399,6 +252,26 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
           this.log.error(`Error processing jalousie block ${blockPath}:`, error);
         }
       }
+
+      // Remove accessories that no longer exist
+      this.accessories.forEach(accessory => {
+        const uuid = accessory.UUID;
+        if (!activeAccessories.has(uuid)) {
+          this.log.info('Removing accessory no longer present:', accessory.displayName);
+
+          // Clean up accessory instance
+          const instance = this.jalousieAccessories.get(uuid);
+          if (instance) {
+            instance.teardown();
+            this.jalousieAccessories.delete(uuid);
+          }
+
+          // Unregister the accessory
+          this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        }
+      });
+
+      this.log.info('Device discovery completed');
     } catch (error) {
       this.log.error('Error discovering devices:', error);
     }

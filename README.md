@@ -1,14 +1,16 @@
 # Homebridge PLC Jalousie Plugin
 
-This Homebridge plugin connects to a PLC server to discover and control jalousies (blinds/shutters).
+This Homebridge plugin connects to a PLC server to discover and control jalousies (blinds/shutters). It automatically identifies jalousie devices from your PLC server and creates individual HomeKit accessories for each one.
 
 ## Features
 
-- Automatically discovers jalousie devices from your PLC
-- Controls jalousies (up/down/position)
-- Configurable PLC connection settings
-- Real-time status updates
+- Automatic discovery of all jalousie devices from your PLC
+- Individual accessory for each jalousie with proper naming
+- Controls for up/down movement and position setting
+- Real-time status updates with configurable polling interval
 - Support for step-by-step control for precise positioning
+- Automatic rediscovery to detect new devices
+- Detailed logging for troubleshooting
 
 ## Installation
 
@@ -30,9 +32,8 @@ Add the following to your Homebridge config.json:
       "port": 4840,
       "pollingInterval": 10,
       "commandTimeout": 5000,
-      "debug": false
-    }
-  ]
+      "discoveryTimeout": 15000,
+      "
 }
 ```
 
@@ -46,6 +47,8 @@ Add the following to your Homebridge config.json:
 | port | Port number of your PLC server |
 | pollingInterval | How often to update status (in seconds) |
 | commandTimeout | Timeout for PLC commands (in milliseconds) |
+| discoveryTimeout | Timeout for initial discovery commands (in milliseconds) |
+| autoDiscoveryInterval | How often to automatically rediscover devices (in minutes, 0 to disable) |
 | debug | Enable additional logging |
 
 ## How It Works

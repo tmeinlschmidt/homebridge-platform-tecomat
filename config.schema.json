@@ -42,6 +42,22 @@
         "default": 5000,
         "description": "Timeout for PLC commands in milliseconds"
       },
+      "discoveryTimeout": {
+        "title": "Discovery Timeout (ms)",
+        "type": "integer",
+        "minimum": 5000,
+        "maximum": 60000,
+        "default": 15000,
+        "description": "Timeout for initial discovery commands in milliseconds"
+      },
+      "autoDiscoveryInterval": {
+        "title": "Auto-Discovery Interval (minutes)",
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1440,
+        "default": 60,
+        "description": "Interval for automatic rediscovery of devices (0 to disable)"
+      },
       "debug": {
         "title": "Debug Mode",
         "type": "boolean",
