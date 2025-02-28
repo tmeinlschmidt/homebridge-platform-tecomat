@@ -6,4 +6,4 @@ export const PLATFORM_NAME = 'PlcJalousiePlatform';
 /**
  * This must match the name of your plugin as defined the package.json
  */
-export const PLUGIN_NAME = 'homebridge-plc-jalousie';
+export const PLUGIN_NAME = 'homebridge-platform-tecomat';

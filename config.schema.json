@@ -1,5 +1,5 @@
 {
-  "pluginAlias": "HomeBridgePlcJalousie",
+  "pluginAlias": "PlcJalousiePlatform",
   "pluginType": "platform",
   "singular": true,
   "schema": {
