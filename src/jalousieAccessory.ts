@@ -214,14 +214,20 @@ export class JalousieAccessory {
       // Get current PLC position (inverted from HomeKit)
       const plcCurrentPosition = 100 - this.currentPosition;
 
-      // Calculate the movement time based on position difference and upDownTime
+      // Calculate the time needed to reach the target position
       const positionDifference = Math.abs(plcTargetPosition - plcCurrentPosition);
       const movementPercentage = positionDifference / 100;
-      const estimatedTime = Math.ceil(this.upDownTime * movementPercentage);
+      const movementTime = Math.ceil(this.upDownTime * movementPercentage);
 
-      this.log.debug(`${this.jalousieInfo.name} - Movement calculation: ${positionDifference}% movement, estimated ${estimatedTime}ms`);
+      this.log.debug(`${this.jalousieInfo.name} - Movement calculation: ${positionDifference}% movement, estimated ${movementTime}ms`);
 
-      // Determine direction and set position state
+      if (positionDifference === 0) {
+        // Already at target position
+        this.log.debug(`${this.jalousieInfo.name} - Already at target position`);
+        return;
+      }
+
+      // Determine direction and start movement
       if (plcTargetPosition < plcCurrentPosition) {
         // In PLC terms, smaller position value means moving up/opening
         this.positionState = this.POSITION_STATE.INCREASING;
@@ -235,7 +241,7 @@ export class JalousieAccessory {
         if (!response.includes("DIFF:") && !response.includes(",1")) {
           throw new Error(`Failed to start up movement, response: ${response}`);
         }
-        this.log.debug(`${this.jalousieInfo.name} - Moving UP for ${estimatedTime}ms`);
+        this.log.debug(`${this.jalousieInfo.name} - Moving UP for ${movementTime}ms`);
       } else {
         // In PLC terms, larger position value means moving down/closing
         this.positionState = this.POSITION_STATE.DECREASING;
@@ -249,7 +255,7 @@ export class JalousieAccessory {
         if (!response.includes("DIFF:") && !response.includes(",1")) {
           throw new Error(`Failed to start down movement, response: ${response}`);
         }
-        this.log.debug(`${this.jalousieInfo.name} - Moving DOWN for ${estimatedTime}ms`);
+        this.log.debug(`${this.jalousieInfo.name} - Moving DOWN for ${movementTime}ms`);
       }
 
       this.moving = true;
@@ -257,11 +263,38 @@ export class JalousieAccessory {
       // Set a timeout to stop the movement after the calculated time
       this.operationTimeout = setTimeout(async () => {
         this.log.debug(`${this.jalousieInfo.name} - Timed movement complete, stopping`);
-        await this.stopMovement();
 
-        // Update position after movement
-        await this.updateCurrentPositionAndState();
-      }, estimatedTime);
+        // Send the same command again to stop movement
+        if (this.positionState === this.POSITION_STATE.INCREASING) {
+          await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
+        } else if (this.positionState === this.POSITION_STATE.DECREASING) {
+          await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+        }
+
+        // Update state after sending the stop command
+        this.moving = false;
+        this.positionState = this.POSITION_STATE.STOPPED;
+
+        // Update HomeKit characteristics
+        this.service.updateCharacteristic(
+          this.platform.Characteristic.PositionState,
+          this.POSITION_STATE.STOPPED
+        );
+
+        // Update the current position to match target since we've stopped at the desired point
+        this.currentPosition = this.targetPosition;
+        this.service.updateCharacteristic(
+          this.platform.Characteristic.CurrentPosition,
+          this.currentPosition
+        );
+
+        this.log.info(`${this.jalousieInfo.name} - Stopped at target position ${this.targetPosition}%`);
+
+        // Update real position from PLC after a short delay
+        setTimeout(async () => {
+          await this.updateCurrentPositionAndState();
+        }, 2000);
+      }, movementTime);
     } catch (error) {
       this.log.error(`Error setting position for ${this.jalousieInfo.name}: ${error}`);
       // Reset to stopped state on error
@@ -305,10 +338,32 @@ export class JalousieAccessory {
         this.operationTimeout = undefined;
       }
 
-      await this.stopMovement();
+      // Send the same command again to stop movement
+      if (this.positionState === this.POSITION_STATE.INCREASING) {
+        await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
+      } else if (this.positionState === this.POSITION_STATE.DECREASING) {
+        await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+      }
 
-      // Update current position and state
+      // Update state
+      this.moving = false;
+      this.positionState = this.POSITION_STATE.STOPPED;
+
+      // Update HomeKit characteristics
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.PositionState,
+        this.POSITION_STATE.STOPPED
+      );
+
+      // Update current position from PLC
       await this.updateCurrentPositionAndState();
+
+      // Update target to match current
+      this.targetPosition = this.currentPosition;
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.TargetPosition,
+        this.targetPosition
+      );
     }
   }
 
@@ -317,18 +372,15 @@ export class JalousieAccessory {
    */
   private async stopMovement() {
     try {
-      let response;
-      // If we were increasing, we need to set WEBUP to FALSE
+      // Send the same command again to stop movement
       if (this.positionState === this.POSITION_STATE.INCREASING) {
-        response = await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'FALSE');
-        if (!response.includes("DIFF:") && !response.includes(",0")) {
+        const response = await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
+        if (!response.includes("DIFF:")) {
           this.log.warn(`Unexpected response when stopping up movement: ${response}`);
         }
-      }
-      // If we were decreasing, we need to set WEBDW to FALSE
-      else if (this.positionState === this.POSITION_STATE.DECREASING) {
-        response = await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'FALSE');
-        if (!response.includes("DIFF:") && !response.includes(",0")) {
+      } else if (this.positionState === this.POSITION_STATE.DECREASING) {
+        const response = await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+        if (!response.includes("DIFF:")) {
           this.log.warn(`Unexpected response when stopping down movement: ${response}`);
         }
       }
@@ -346,7 +398,7 @@ export class JalousieAccessory {
       // Get current position after stopping
       await this.updateCurrentPosition();
 
-      // Update target to current position if we're at a stable state
+      // Update target to current position
       this.targetPosition = this.currentPosition;
       this.service.updateCharacteristic(
         this.platform.Characteristic.TargetPosition,
@@ -358,8 +410,6 @@ export class JalousieAccessory {
       this.log.error(`Error stopping movement for ${this.jalousieInfo.name}: ${error}`);
     }
   }
-
-  // This method is no longer needed as we're using a timeout based on UPDWTIME
 
   /**
    * Update both the current position and movement state from the PLC
