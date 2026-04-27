@@ -1,4 +1,4 @@
-import { PlatformAccessory, Service, Logger } from 'homebridge';
+import { CharacteristicValue, PlatformAccessory, Service, Logger } from 'homebridge';
 import { PlcJalousiePlatform } from './platform';
 import * as net from 'net';
 import {
@@ -208,7 +208,7 @@ export class JalousieAccessory {
    * Handle requests to set the target position
    * @param value target position (0-100)
    */
-  async handleTargetPositionSet(value) {
+  async handleTargetPositionSet(value: CharacteristicValue) {
     const newTargetPosition = value as number;
 
     // If the target position hasn't changed, do nothing
@@ -354,7 +354,7 @@ export class JalousieAccessory {
   /**
    * Handle requests to hold current position (stop movement)
    */
-  async handleHoldPositionSet(value) {
+  async handleHoldPositionSet(value: CharacteristicValue) {
     if (value) {
       this.log.info(`Hold position requested for ${this.jalousieInfo.name}`);
 
