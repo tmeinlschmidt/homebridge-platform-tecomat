@@ -21,6 +21,22 @@ export interface JalousieInfo {
 }
 
 /**
+ * Transport callable used to talk to the PLC. Returns the raw response
+ * string. Pass a custom transport to JalousieAccessory in unit tests.
+ */
+export type JalousieTransport = (command: string, value: string) => Promise<string>;
+
+/**
+ * Optional dependency overrides. Production code leaves these defaulted;
+ * tests can inject a fake transport and skip the polling/init lifecycle.
+ */
+export interface JalousieAccessoryOptions {
+  transport?: JalousieTransport;
+  /** When true, skip the constructor-time initialize() and polling timer. */
+  autoStart?: boolean;
+}
+
+/**
  * JalousieAccessory - represents a single blind/shutter device
  * Implements the HomeKit WindowCovering service
  */
@@ -40,13 +56,18 @@ export class JalousieAccessory {
   private upDownTime = 0; // Time in milliseconds for full movement
   private lastKnownPosition = 0;
 
+  private readonly transport: JalousieTransport;
+
   constructor(
     private readonly platform: PlcJalousiePlatform,
     private readonly accessory: PlatformAccessory,
     private readonly registerPath: string,
     private readonly jalousieInfo: JalousieInfo,
     private readonly log: Logger,
+    options: JalousieAccessoryOptions = {},
   ) {
+    this.transport = options.transport ?? this.defaultTransport.bind(this);
+    const autoStart = options.autoStart !== false;
     // Setup window covering service
     this.service = this.accessory.getService(this.platform.Service.WindowCovering)
       || this.accessory.addService(this.platform.Service.WindowCovering);
@@ -79,16 +100,18 @@ export class JalousieAccessory {
     this.service.getCharacteristic(this.platform.Characteristic.HoldPosition)
       .onSet(this.handleHoldPositionSet.bind(this));
 
-    // Initialize and get properties
-    this.initialize();
+    if (autoStart) {
+      // Initialize and get properties
+      this.initialize();
 
-    // Update position periodically
-    const pollingInterval = this.platform.config.pollingInterval || 10;
-    this.updateInterval = setInterval(() => {
-      this.updateCurrentPositionAndState().catch(err => {
-        this.log.debug(`Error updating position for ${this.jalousieInfo.name}: ${err}`);
-      });
-    }, pollingInterval * 1000); // Convert to milliseconds
+      // Update position periodically
+      const pollingInterval = this.platform.config.pollingInterval || 10;
+      this.updateInterval = setInterval(() => {
+        this.updateCurrentPositionAndState().catch(err => {
+          this.log.debug(`Error updating position for ${this.jalousieInfo.name}: ${err}`);
+        });
+      }, pollingInterval * 1000); // Convert to milliseconds
+    }
 
     this.log.info(`Jalousie accessory initialized: ${jalousieInfo.name}`);
   }
@@ -125,7 +148,7 @@ export class JalousieAccessory {
    */
   private async fetchUpDownTime() {
     try {
-      const response = await this.sendCommand(`GET:${this.registerPath}.UPDWTIME`, '');
+      const response = await this.transport(`GET:${this.registerPath}.UPDWTIME`, '');
       const parsed = parseUpDownTime(response);
       if (parsed !== null) {
         this.upDownTime = parsed;
@@ -241,7 +264,7 @@ export class JalousieAccessory {
         );
 
         // Send command to move up - only send one command
-        const response = await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
+        const response = await this.transport(`SET:${this.registerPath}.WEBUP`, 'TRUE');
         if (!response.includes('DIFF:') && !response.includes(',1')) {
           throw new Error(`Failed to start up movement, response: ${response}`);
         }
@@ -255,7 +278,7 @@ export class JalousieAccessory {
         );
 
         // Send command to move down - only send one command
-        const response = await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+        const response = await this.transport(`SET:${this.registerPath}.WEBDW`, 'TRUE');
         if (!response.includes('DIFF:') && !response.includes(',1')) {
           throw new Error(`Failed to start down movement, response: ${response}`);
         }
@@ -270,9 +293,9 @@ export class JalousieAccessory {
 
         // Send the same command again to stop movement
         if (this.positionState === this.POSITION_STATE.INCREASING) {
-          await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
+          await this.transport(`SET:${this.registerPath}.WEBUP`, 'TRUE');
         } else if (this.positionState === this.POSITION_STATE.DECREASING) {
-          await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+          await this.transport(`SET:${this.registerPath}.WEBDW`, 'TRUE');
         }
 
         // Update state after sending the stop command
@@ -344,9 +367,9 @@ export class JalousieAccessory {
 
       // Send the same command again to stop movement
       if (this.positionState === this.POSITION_STATE.INCREASING) {
-        await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
+        await this.transport(`SET:${this.registerPath}.WEBUP`, 'TRUE');
       } else if (this.positionState === this.POSITION_STATE.DECREASING) {
-        await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+        await this.transport(`SET:${this.registerPath}.WEBDW`, 'TRUE');
       }
 
       // Update state
@@ -378,12 +401,12 @@ export class JalousieAccessory {
     try {
       // Send the same command again to stop movement
       if (this.positionState === this.POSITION_STATE.INCREASING) {
-        const response = await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
+        const response = await this.transport(`SET:${this.registerPath}.WEBUP`, 'TRUE');
         if (!response.includes('DIFF:')) {
           this.log.warn(`Unexpected response when stopping up movement: ${response}`);
         }
       } else if (this.positionState === this.POSITION_STATE.DECREASING) {
-        const response = await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+        const response = await this.transport(`SET:${this.registerPath}.WEBDW`, 'TRUE');
         if (!response.includes('DIFF:')) {
           this.log.warn(`Unexpected response when stopping down movement: ${response}`);
         }
@@ -441,7 +464,7 @@ export class JalousieAccessory {
    */
   async updateCurrentPosition() {
     try {
-      const positionResponse = await this.sendCommand(`GET:${this.registerPath}.POSIT`, '');
+      const positionResponse = await this.transport(`GET:${this.registerPath}.POSIT`, '');
       const plcPosition = parsePosit(positionResponse);
       if (plcPosition !== null) {
         // Convert PLC position to HomeKit position (invert the value)
@@ -476,7 +499,7 @@ export class JalousieAccessory {
   async updateMovementState() {
     try {
       // Check if running using GTSAP1_SHUTTER_run
-      const runResponse = await this.sendCommand(`GET:${this.registerPath}.GTSAP1_SHUTTER_run`, '');
+      const runResponse = await this.transport(`GET:${this.registerPath}.GTSAP1_SHUTTER_run`, '');
       const isRunning = isFlagTrue(runResponse);
 
       // If not running, set to stopped
@@ -503,7 +526,7 @@ export class JalousieAccessory {
       }
 
       // If running, check direction
-      const upResponse = await this.sendCommand(`GET:${this.registerPath}.GTSAP1_SHUTTER_up`, '');
+      const upResponse = await this.transport(`GET:${this.registerPath}.GTSAP1_SHUTTER_up`, '');
       const isMovingUp = isFlagTrue(upResponse);
 
       if (isMovingUp) {
@@ -537,9 +560,9 @@ export class JalousieAccessory {
   }
 
   /**
-   * Send a command to the PLC and get the response
+   * Default socket-based transport. Used when no override is supplied.
    */
-  private async sendCommand(command: string, value: string): Promise<string> {
+  private async defaultTransport(command: string, value: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const client = new net.Socket();
       let responseData = '';
