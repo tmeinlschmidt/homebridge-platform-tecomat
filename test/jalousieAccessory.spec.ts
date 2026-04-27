@@ -1,5 +1,10 @@
 import { buildAccessory, C, POSITION_STATE } from './helpers/mocks';
 
+afterEach(() => {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+});
+
 describe('JalousieAccessory — wiring', () => {
   it('initialises HomeKit characteristics and accessory metadata', () => {
     const { service } = buildAccessory();
@@ -242,6 +247,129 @@ describe('updateMovementState — target resync on stop', () => {
       if (internals.operationTimeout) {
         clearTimeout(internals.operationTimeout);
       }
+    }
+  });
+});
+
+describe('stop-toggle race — never restart a stopped jalousie', () => {
+  const path = 'TEST.CJALOUSIE';
+
+  it('operationTimeout skips WEBUP/WEBDW when the PLC has already stopped', async () => {
+    // Regression for the toggle bug: re-sending WEBUP/WEBDW is the
+    // *start* command. If the PLC reached its limit before our timer
+    // fired, the timed-stop used to kick the jalousie right back into
+    // motion. Now we check _run first.
+    jest.useFakeTimers();
+    try {
+      const replies = new Map<string, string>([
+        ['.POSIT', `GET:${path}.POSIT,40`],
+        // PLC says it's already stopped by the time the timer fires.
+        ['.GTSAP1_SHUTTER_run', `GET:${path}.GTSAP1_SHUTTER_run,0`],
+      ]);
+      const transport = jest.fn(async (command: string) => {
+        for (const [suffix, reply] of replies) {
+          if (command.endsWith(suffix)) {
+            return reply;
+          }
+        }
+        return 'DIFF:1';
+      });
+      const { accessory } = buildAccessory({ transport, upDownTime: 10000 });
+
+      // Start at HomeKit 100 (open). Drive target to 50 — DECREASING,
+      // movementTime = ceil(10000 * 50/100) = 5000 ms.
+      await accessory.handleTargetPositionSet(50);
+
+      // Count toggle commands issued before and after the timer fires.
+      const togglesBefore = transport.mock.calls
+        .map((c) => c[0] as string)
+        .filter((c) => /\.(WEBUP|WEBDW)$/.test(c)).length;
+      expect(togglesBefore).toBe(1); // the initial start command
+
+      await jest.advanceTimersByTimeAsync(6000);
+
+      const togglesAfter = transport.mock.calls
+        .map((c) => c[0] as string)
+        .filter((c) => /\.(WEBUP|WEBDW)$/.test(c)).length;
+      // Timer fired but PLC was already stopped → no extra toggle issued.
+      expect(togglesAfter).toBe(togglesBefore);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it('operationTimeout DOES toggle when the PLC is still running', async () => {
+    jest.useFakeTimers();
+    try {
+      const transport = jest.fn(async (command: string) => {
+        if (command.endsWith('.POSIT')) {
+          return `GET:${path}.POSIT,40`;
+        }
+        if (command.endsWith('.GTSAP1_SHUTTER_run')) {
+          return `GET:${path}.GTSAP1_SHUTTER_run,1`;
+        }
+        return 'DIFF:1';
+      });
+      const { accessory } = buildAccessory({ transport, upDownTime: 10000 });
+
+      await accessory.handleTargetPositionSet(50);
+
+      const before = transport.mock.calls
+        .map((c) => c[0] as string)
+        .filter((c) => /\.(WEBUP|WEBDW)$/.test(c)).length;
+
+      await jest.advanceTimersByTimeAsync(6000);
+
+      const after = transport.mock.calls
+        .map((c) => c[0] as string)
+        .filter((c) => /\.(WEBUP|WEBDW)$/.test(c)).length;
+      expect(after).toBe(before + 1); // the stop toggle
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it('stopMovement skips the toggle when the PLC reports already stopped', async () => {
+    // State drift between accessory and PLC: accessory thinks
+    // INCREASING, PLC actually idle. Toggle would restart movement.
+    jest.useFakeTimers();
+    try {
+      const transport = jest.fn(async (command: string) => {
+        if (command.endsWith('.GTSAP1_SHUTTER_run')) {
+          return `GET:${path}.GTSAP1_SHUTTER_run,0`;
+        }
+        if (command.endsWith('.POSIT')) {
+          return `GET:${path}.POSIT,30`;
+        }
+        return 'DIFF:1';
+      });
+      const { accessory } = buildAccessory({ transport, upDownTime: 10000 });
+      const internals = accessory as unknown as {
+        currentPosition: number;
+        targetPosition: number;
+        positionState: number;
+      };
+      internals.currentPosition = 70;
+      internals.targetPosition = 70;
+      internals.positionState = POSITION_STATE.INCREASING;
+
+      // Trigger stopMovement via the public path (handleTargetPositionSet
+      // calls it before computing movement).
+      await accessory.handleTargetPositionSet(71);
+
+      const toggleCommands = transport.mock.calls
+        .map((c) => c[0] as string)
+        .filter((c) => /\.(WEBUP|WEBDW)$/.test(c));
+
+      // Only one toggle should appear: the *new* movement start. The
+      // pre-movement stop step must have been skipped because the PLC
+      // reports run=0.
+      expect(toggleCommands.length).toBe(1);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
     }
   });
 });

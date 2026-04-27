@@ -290,14 +290,26 @@ export class JalousieAccessory {
       this.operationTimeout = setTimeout(async () => {
         this.log.debug(`${this.jalousieInfo.name} - Timed movement complete, stopping`);
 
-        // Send the same command again to stop movement
-        if (this.positionState === this.POSITION_STATE.INCREASING) {
-          await this.transport(`SET:${this.registerPath}.WEBUP`, 'TRUE');
-        } else if (this.positionState === this.POSITION_STATE.DECREASING) {
-          await this.transport(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+        // Capture the direction we believed we were moving before any
+        // subsequent state updates touch positionState.
+        const direction = this.positionState;
+
+        // Verify the PLC is still actually running before issuing the
+        // stop toggle. Re-sending WEBUP/WEBDW is the *start* command;
+        // if the PLC reached its limit / was manually stopped, the
+        // toggle would kick it right back into motion.
+        if (await this.isPlcRunning()) {
+          if (direction === this.POSITION_STATE.INCREASING) {
+            await this.transport(`SET:${this.registerPath}.WEBUP`, 'TRUE');
+          } else if (direction === this.POSITION_STATE.DECREASING) {
+            await this.transport(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+          }
+        } else {
+          this.log.debug(`${this.jalousieInfo.name} - PLC already stopped, skipping toggle`);
         }
 
         // Update state after sending the stop command
+        this.operationTimeout = undefined;
         this.moving = false;
         this.positionState = this.POSITION_STATE.STOPPED;
 
@@ -364,11 +376,15 @@ export class JalousieAccessory {
         this.operationTimeout = undefined;
       }
 
-      // Send the same command again to stop movement
-      if (this.positionState === this.POSITION_STATE.INCREASING) {
-        await this.transport(`SET:${this.registerPath}.WEBUP`, 'TRUE');
-      } else if (this.positionState === this.POSITION_STATE.DECREASING) {
-        await this.transport(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+      // Send the same command again to stop movement — but only if the
+      // PLC is actually still running, since the toggle would otherwise
+      // restart a fresh movement.
+      if (await this.isPlcRunning()) {
+        if (this.positionState === this.POSITION_STATE.INCREASING) {
+          await this.transport(`SET:${this.registerPath}.WEBUP`, 'TRUE');
+        } else if (this.positionState === this.POSITION_STATE.DECREASING) {
+          await this.transport(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+        }
       }
 
       // Update state
@@ -415,8 +431,11 @@ export class JalousieAccessory {
       return;
     }
     try {
-      // Send the same command again to stop movement
-      if (this.positionState === this.POSITION_STATE.INCREASING) {
+      // Don't toggle if the PLC has already stopped on its own — re-sending
+      // WEBUP/WEBDW would start a new movement.
+      if (!(await this.isPlcRunning())) {
+        this.log.debug(`${this.jalousieInfo.name} - PLC already stopped, skipping stop toggle`);
+      } else if (this.positionState === this.POSITION_STATE.INCREASING) {
         const response = await this.transport(`SET:${this.registerPath}.WEBUP`, 'TRUE');
         if (!response.includes('DIFF:')) {
           this.log.warn(`Unexpected response when stopping up movement: ${response}`);
@@ -586,6 +605,25 @@ export class JalousieAccessory {
     } catch (error) {
       this.log.error(`Error updating movement state for ${this.jalousieInfo.name}: ${error}`);
       return this.positionState;
+    }
+  }
+
+  /**
+   * Query the PLC's `_run` flag in isolation. Used as a safety check
+   * before issuing the stop toggle, because re-sending WEBUP/WEBDW
+   * is the *start* command — sending it when the PLC has already
+   * stopped would launch a new movement.
+   */
+  private async isPlcRunning(): Promise<boolean> {
+    try {
+      const response = await this.transport(`GET:${this.registerPath}.GTSAP1_SHUTTER_run`, '');
+      return isFlagTrue(response);
+    } catch (err) {
+      // On transport error, fall back to assuming the PLC is running so
+      // we still attempt to stop it. A spurious extra start command is
+      // less bad than leaving a movement uncancelled forever.
+      this.log.warn(`${this.jalousieInfo.name} - run check failed: ${err}`);
+      return true;
     }
   }
 
