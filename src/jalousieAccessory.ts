@@ -524,31 +524,39 @@ export class JalousieAccessory {
         return this.positionState;
       }
 
-      // If running, check direction
-      const upResponse = await this.transport(`GET:${this.registerPath}.GTSAP1_SHUTTER_up`, '');
+      // If running, check direction by querying both flags rather than
+      // inferring "not up = down" — during PLC state transitions both
+      // flags can briefly be 0 and that lie produced spurious DECREASING.
+      const [upResponse, downResponse] = await Promise.all([
+        this.transport(`GET:${this.registerPath}.GTSAP1_SHUTTER_up`, ''),
+        this.transport(`GET:${this.registerPath}.GTSAP1_SHUTTER_down`, ''),
+      ]);
       const isMovingUp = isFlagTrue(upResponse);
+      const isMovingDown = isFlagTrue(downResponse);
 
-      if (isMovingUp) {
-        if (this.positionState !== this.POSITION_STATE.INCREASING) {
-          this.log.debug(`${this.jalousieInfo.name} - Movement detected as UP (OPENING)`);
-          this.positionState = this.POSITION_STATE.INCREASING;
-          this.moving = true;
-          this.service.updateCharacteristic(
-            this.platform.Characteristic.PositionState,
-            this.POSITION_STATE.INCREASING,
-          );
-        }
+      let nextState: number | null = null;
+      if (isMovingUp && !isMovingDown) {
+        nextState = this.POSITION_STATE.INCREASING;
+      } else if (isMovingDown && !isMovingUp) {
+        nextState = this.POSITION_STATE.DECREASING;
       } else {
-        // Must be moving down
-        if (this.positionState !== this.POSITION_STATE.DECREASING) {
-          this.log.debug(`${this.jalousieInfo.name} - Movement detected as DOWN (CLOSING)`);
-          this.positionState = this.POSITION_STATE.DECREASING;
-          this.moving = true;
-          this.service.updateCharacteristic(
-            this.platform.Characteristic.PositionState,
-            this.POSITION_STATE.DECREASING,
-          );
-        }
+        // _up == _down (both off or both on) is ambiguous. Don't fabricate
+        // a direction — leave positionState alone and let the next poll
+        // resolve it. Log so we can spot misbehaving PLCs.
+        this.log.debug(
+          `${this.jalousieInfo.name} - run=1 but up=${isMovingUp} down=${isMovingDown}; keeping state`,
+        );
+      }
+
+      if (nextState !== null && this.positionState !== nextState) {
+        const label = nextState === this.POSITION_STATE.INCREASING ? 'UP (OPENING)' : 'DOWN (CLOSING)';
+        this.log.debug(`${this.jalousieInfo.name} - Movement detected as ${label}`);
+        this.positionState = nextState;
+        this.moving = true;
+        this.service.updateCharacteristic(
+          this.platform.Characteristic.PositionState,
+          nextState,
+        );
       }
 
       return this.positionState;
