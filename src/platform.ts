@@ -15,8 +15,10 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
 
-  // this is used to track restored cached accessories
-  public readonly accessories: PlatformAccessory[] = [];
+  // Restored cached accessories, keyed by UUID. The template recommends a
+  // Map so lookups during discovery are O(1) and stale entries can be
+  // pruned without splicing an array.
+  public readonly accessories: Map<string, PlatformAccessory> = new Map();
 
   // map to track jalousie accessory instances
   private readonly jalousieAccessories: Map<string, JalousieAccessory> = new Map();
@@ -74,7 +76,7 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
     this.log.info('Loading accessory from cache:', accessory.displayName);
 
     // add the restored accessory to the accessories cache so we can track if it has already been registered
-    this.accessories.push(accessory);
+    this.accessories.set(accessory.UUID, accessory);
   }
 
   /**
@@ -234,7 +236,7 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
 
           // Check if an accessory with the same uuid has already been registered and restored from
           // the cached devices we stored in the `configureAccessory` method above
-          const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
+          const existingAccessory = this.accessories.get(uuid);
 
           if (existingAccessory) {
             // Restore existing accessory
@@ -266,6 +268,7 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
             // Create the accessory handler
             const jalousieAccessory = new JalousieAccessory(this, accessory, blockPath, jalousieInfo, this.log);
             this.jalousieAccessories.set(uuid, jalousieAccessory);
+            this.accessories.set(uuid, accessory);
 
             // Register the accessory
             this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
@@ -276,22 +279,24 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
       }
 
       // Remove accessories that no longer exist
-      this.accessories.forEach(accessory => {
-        const uuid = accessory.UUID;
-        if (!activeAccessories.has(uuid)) {
-          this.log.info('Removing accessory no longer present:', accessory.displayName);
-
-          // Clean up accessory instance
-          const instance = this.jalousieAccessories.get(uuid);
-          if (instance) {
-            instance.teardown();
-            this.jalousieAccessories.delete(uuid);
-          }
-
-          // Unregister the accessory
-          this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      for (const [uuid, accessory] of this.accessories) {
+        if (activeAccessories.has(uuid)) {
+          continue;
         }
-      });
+        this.log.info('Removing accessory no longer present:', accessory.displayName);
+
+        // Clean up accessory instance
+        const instance = this.jalousieAccessories.get(uuid);
+        if (instance) {
+          instance.teardown();
+          this.jalousieAccessories.delete(uuid);
+        }
+
+        // Unregister the accessory and drop it from the local cache so
+        // a re-run of discovery doesn't try to restore it again.
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.accessories.delete(uuid);
+      }
 
       this.log.info('Device discovery completed');
     } catch (error) {
