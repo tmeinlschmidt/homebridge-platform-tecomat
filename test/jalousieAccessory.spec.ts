@@ -180,3 +180,68 @@ describe('handleTargetPositionSet — preserves user-requested target', () => {
     }
   });
 });
+
+describe('updateMovementState — target resync on stop', () => {
+  const path = 'TEST.CJALOUSIE';
+
+  it('syncs target to current when stop is observed without an active operation', async () => {
+    // Regression for the "5% guard" bug: if a movement aborted (manual
+    // stop, obstacle) at a position far from the requested target,
+    // HomeKit kept the stale target forever.
+    const transport = jest.fn(async (command: string) => {
+      if (command.endsWith('.GTSAP1_SHUTTER_run')) {
+        return `GET:${path}.GTSAP1_SHUTTER_run,0`;
+      }
+      return '';
+    });
+    const { accessory } = buildAccessory({ transport });
+    const internals = accessory as unknown as {
+      currentPosition: number;
+      targetPosition: number;
+      positionState: number;
+    };
+    // Pretend we were observing INCREASING toward target 80 but the PLC
+    // halted at 35 (15% away — well beyond the old 5% guard).
+    internals.currentPosition = 35;
+    internals.targetPosition = 80;
+    internals.positionState = POSITION_STATE.INCREASING;
+
+    await accessory.updateMovementState();
+
+    expect(accessory.handleTargetPositionGet()).toBe(35);
+    expect(internals.targetPosition).toBe(35);
+  });
+
+  it('does NOT touch target when run=0 while an operation is pending', async () => {
+    // Regression: while our own operationTimeout drives movement, run=0
+    // can flicker briefly between commands. Don't reset the user's
+    // target then — the timer will reconcile current/target on completion.
+    const transport = jest.fn(async (command: string) => {
+      if (command.endsWith('.GTSAP1_SHUTTER_run')) {
+        return `GET:${path}.GTSAP1_SHUTTER_run,0`;
+      }
+      return '';
+    });
+    const { accessory } = buildAccessory({ transport });
+    const internals = accessory as unknown as {
+      currentPosition: number;
+      targetPosition: number;
+      positionState: number;
+      operationTimeout?: NodeJS.Timeout;
+    };
+    internals.currentPosition = 40;
+    internals.targetPosition = 80;
+    internals.positionState = POSITION_STATE.INCREASING;
+    // Simulate an in-flight operation.
+    internals.operationTimeout = setTimeout(() => undefined, 999999);
+
+    try {
+      await accessory.updateMovementState();
+      expect(internals.targetPosition).toBe(80);
+    } finally {
+      if (internals.operationTimeout) {
+        clearTimeout(internals.operationTimeout);
+      }
+    }
+  });
+});

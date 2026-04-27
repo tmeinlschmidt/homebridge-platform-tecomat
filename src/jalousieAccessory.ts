@@ -523,8 +523,20 @@ export class JalousieAccessory {
             this.POSITION_STATE.STOPPED,
           );
 
-          // If we reached a position close to target, update target to match current
-          if (Math.abs(this.currentPosition - this.targetPosition) <= 5) {
+          // Sync target to current whenever a stop is observed *passively*
+          // (i.e. nothing we initiated is in flight). Without this, a
+          // movement aborted by the PLC — manual stop, end-of-travel,
+          // obstacle — would leave HomeKit reporting a stale target
+          // forever, since the previous heuristic only synced when the
+          // mismatch was within 5%.
+          //
+          // While our own operationTimeout is pending we *expect* run=0
+          // to fluctuate; the timer will resync target/current itself
+          // on completion, so don't fight it.
+          if (
+            this.operationTimeout === undefined
+            && this.targetPosition !== this.currentPosition
+          ) {
             this.targetPosition = this.currentPosition;
             this.service.updateCharacteristic(
               this.platform.Characteristic.TargetPosition,
