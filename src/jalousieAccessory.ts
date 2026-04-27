@@ -54,7 +54,6 @@ export class JalousieAccessory {
   private positionState: number = this.POSITION_STATE.STOPPED;
   private moving = false;
   private upDownTime = 0; // Time in milliseconds for full movement
-  private lastKnownPosition = 0;
 
   private readonly transport: JalousieTransport;
 
