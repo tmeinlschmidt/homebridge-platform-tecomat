@@ -1,6 +1,14 @@
 import { PlatformAccessory, Service, Logger } from 'homebridge';
 import { PlcJalousiePlatform } from './platform';
 import * as net from 'net';
+import {
+  POSITION_STATE,
+  calculateMovementTimeMs,
+  homekitToPlcPosition,
+  isFlagTrue,
+  parsePosit,
+  parseUpDownTime,
+} from './jalousieLogic';
 
 /**
  * Interface for jalousie information
@@ -22,16 +30,12 @@ export class JalousieAccessory {
   private operationTimeout?: NodeJS.Timeout;
 
   // Homebridge characteristics
-  private readonly POSITION_STATE = {
-    DECREASING: 0,
-    INCREASING: 1,
-    STOPPED: 2
-  };
+  private readonly POSITION_STATE = POSITION_STATE;
 
   // State variables
   private currentPosition = 100;  // HomeKit: 0 (fully closed) to 100 (fully open)
   private targetPosition = 100;   // HomeKit: 0 (fully closed) to 100 (fully open)
-  private positionState = this.POSITION_STATE.STOPPED;
+  private positionState: number = this.POSITION_STATE.STOPPED;
   private moving = false;
   private upDownTime = 0; // Time in milliseconds for full movement
   private lastKnownPosition = 0;
@@ -107,7 +111,7 @@ export class JalousieAccessory {
       this.targetPosition = this.currentPosition;
       this.service.updateCharacteristic(
         this.platform.Characteristic.TargetPosition,
-        this.targetPosition
+        this.targetPosition,
       );
 
       this.log.info(`${this.jalousieInfo.name} initialized at position ${this.currentPosition}%, upDownTime: ${this.upDownTime}ms`);
@@ -122,14 +126,11 @@ export class JalousieAccessory {
   private async fetchUpDownTime() {
     try {
       const response = await this.sendCommand(`GET:${this.registerPath}.UPDWTIME`, '');
-      if (response) {
-        // Parse response to get up-down time value
-        const match = response.match(/GET:.*\.UPDWTIME,(\d+)/);
-        if (match && match[1]) {
-          this.upDownTime = parseInt(match[1]);
-          this.log.info(`Fetched upDownTime for ${this.jalousieInfo.name}: ${this.upDownTime}ms`);
-          return this.upDownTime;
-        }
+      const parsed = parseUpDownTime(response);
+      if (parsed !== null) {
+        this.upDownTime = parsed;
+        this.log.info(`Fetched upDownTime for ${this.jalousieInfo.name}: ${this.upDownTime}ms`);
+        return this.upDownTime;
       }
 
       // If we couldn't get the value, use a default
@@ -198,7 +199,7 @@ export class JalousieAccessory {
     // Convert HomeKit position to PLC position (invert the value)
     // HomeKit: 0 = closed, 100 = open
     // PLC: 100 = closed, 0 = open
-    const plcTargetPosition = 100 - this.targetPosition;
+    const plcTargetPosition = homekitToPlcPosition(this.targetPosition);
 
     this.log.info(`Set Target Position for ${this.jalousieInfo.name}: ${this.targetPosition}% (PLC target: ${plcTargetPosition})`);
 
@@ -212,12 +213,15 @@ export class JalousieAccessory {
       await this.stopMovement();
 
       // Get current PLC position (inverted from HomeKit)
-      const plcCurrentPosition = 100 - this.currentPosition;
+      const plcCurrentPosition = homekitToPlcPosition(this.currentPosition);
 
       // Calculate the time needed to reach the target position
       const positionDifference = Math.abs(plcTargetPosition - plcCurrentPosition);
-      const movementPercentage = positionDifference / 100;
-      const movementTime = Math.ceil(this.upDownTime * movementPercentage);
+      const movementTime = calculateMovementTimeMs(
+        this.upDownTime,
+        this.currentPosition,
+        this.targetPosition,
+      );
 
       this.log.debug(`${this.jalousieInfo.name} - Movement calculation: ${positionDifference}% movement, estimated ${movementTime}ms`);
 
@@ -233,12 +237,12 @@ export class JalousieAccessory {
         this.positionState = this.POSITION_STATE.INCREASING;
         this.service.updateCharacteristic(
           this.platform.Characteristic.PositionState,
-          this.POSITION_STATE.INCREASING
+          this.POSITION_STATE.INCREASING,
         );
 
         // Send command to move up - only send one command
         const response = await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
-        if (!response.includes("DIFF:") && !response.includes(",1")) {
+        if (!response.includes('DIFF:') && !response.includes(',1')) {
           throw new Error(`Failed to start up movement, response: ${response}`);
         }
         this.log.debug(`${this.jalousieInfo.name} - Moving UP for ${movementTime}ms`);
@@ -247,12 +251,12 @@ export class JalousieAccessory {
         this.positionState = this.POSITION_STATE.DECREASING;
         this.service.updateCharacteristic(
           this.platform.Characteristic.PositionState,
-          this.POSITION_STATE.DECREASING
+          this.POSITION_STATE.DECREASING,
         );
 
         // Send command to move down - only send one command
         const response = await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
-        if (!response.includes("DIFF:") && !response.includes(",1")) {
+        if (!response.includes('DIFF:') && !response.includes(',1')) {
           throw new Error(`Failed to start down movement, response: ${response}`);
         }
         this.log.debug(`${this.jalousieInfo.name} - Moving DOWN for ${movementTime}ms`);
@@ -278,14 +282,14 @@ export class JalousieAccessory {
         // Update HomeKit characteristics
         this.service.updateCharacteristic(
           this.platform.Characteristic.PositionState,
-          this.POSITION_STATE.STOPPED
+          this.POSITION_STATE.STOPPED,
         );
 
         // Update the current position to match target since we've stopped at the desired point
         this.currentPosition = this.targetPosition;
         this.service.updateCharacteristic(
           this.platform.Characteristic.CurrentPosition,
-          this.currentPosition
+          this.currentPosition,
         );
 
         this.log.info(`${this.jalousieInfo.name} - Stopped at target position ${this.targetPosition}%`);
@@ -301,7 +305,7 @@ export class JalousieAccessory {
       this.positionState = this.POSITION_STATE.STOPPED;
       this.service.updateCharacteristic(
         this.platform.Characteristic.PositionState,
-        this.POSITION_STATE.STOPPED
+        this.POSITION_STATE.STOPPED,
       );
       this.moving = false;
     }
@@ -352,7 +356,7 @@ export class JalousieAccessory {
       // Update HomeKit characteristics
       this.service.updateCharacteristic(
         this.platform.Characteristic.PositionState,
-        this.POSITION_STATE.STOPPED
+        this.POSITION_STATE.STOPPED,
       );
 
       // Update current position from PLC
@@ -362,7 +366,7 @@ export class JalousieAccessory {
       this.targetPosition = this.currentPosition;
       this.service.updateCharacteristic(
         this.platform.Characteristic.TargetPosition,
-        this.targetPosition
+        this.targetPosition,
       );
     }
   }
@@ -375,12 +379,12 @@ export class JalousieAccessory {
       // Send the same command again to stop movement
       if (this.positionState === this.POSITION_STATE.INCREASING) {
         const response = await this.sendCommand(`SET:${this.registerPath}.WEBUP`, 'TRUE');
-        if (!response.includes("DIFF:")) {
+        if (!response.includes('DIFF:')) {
           this.log.warn(`Unexpected response when stopping up movement: ${response}`);
         }
       } else if (this.positionState === this.POSITION_STATE.DECREASING) {
         const response = await this.sendCommand(`SET:${this.registerPath}.WEBDW`, 'TRUE');
-        if (!response.includes("DIFF:")) {
+        if (!response.includes('DIFF:')) {
           this.log.warn(`Unexpected response when stopping down movement: ${response}`);
         }
       }
@@ -392,7 +396,7 @@ export class JalousieAccessory {
       // Update HomeKit characteristics
       this.service.updateCharacteristic(
         this.platform.Characteristic.PositionState,
-        this.POSITION_STATE.STOPPED
+        this.POSITION_STATE.STOPPED,
       );
 
       // Get current position after stopping
@@ -402,7 +406,7 @@ export class JalousieAccessory {
       this.targetPosition = this.currentPosition;
       this.service.updateCharacteristic(
         this.platform.Characteristic.TargetPosition,
-        this.targetPosition
+        this.targetPosition,
       );
 
       this.log.debug(`${this.jalousieInfo.name} - Movement stopped at position ${this.currentPosition}%`);
@@ -424,7 +428,7 @@ export class JalousieAccessory {
 
       return {
         position: this.currentPosition,
-        state: this.positionState
+        state: this.positionState,
       };
     } catch (error) {
       this.log.error(`Error updating state for ${this.jalousieInfo.name}: ${error}`);
@@ -438,31 +442,26 @@ export class JalousieAccessory {
   async updateCurrentPosition() {
     try {
       const positionResponse = await this.sendCommand(`GET:${this.registerPath}.POSIT`, '');
-      if (positionResponse) {
-        // Parse response to get position value
-        const match = positionResponse.match(/GET:.*\.POSIT,(\d+)/);
-        if (match && match[1]) {
-          const plcPosition = parseInt(match[1]);
+      const plcPosition = parsePosit(positionResponse);
+      if (plcPosition !== null) {
+        // Convert PLC position to HomeKit position (invert the value)
+        // PLC: 100 = closed, 0 = open
+        // HomeKit: 0 = closed, 100 = open
+        const newPosition = 100 - plcPosition;
 
-          // Convert PLC position to HomeKit position (invert the value)
-          // PLC: 100 = closed, 0 = open
-          // HomeKit: 0 = closed, 100 = open
-          const newPosition = 100 - plcPosition;
+        // Only update and log if the position has changed
+        if (newPosition !== this.currentPosition) {
+          this.log.debug(`Position update for ${this.jalousieInfo.name}: ${newPosition}% (PLC POSIT: ${plcPosition})`);
+          this.currentPosition = newPosition;
 
-          // Only update and log if the position has changed
-          if (newPosition !== this.currentPosition) {
-            this.log.debug(`Position update for ${this.jalousieInfo.name}: ${newPosition}% (PLC POSIT: ${plcPosition})`);
-            this.currentPosition = newPosition;
-
-            // Update HomeKit
-            this.service.updateCharacteristic(
-              this.platform.Characteristic.CurrentPosition,
-              this.currentPosition
-            );
-          }
-
-          return this.currentPosition;
+          // Update HomeKit
+          this.service.updateCharacteristic(
+            this.platform.Characteristic.CurrentPosition,
+            this.currentPosition,
+          );
         }
+
+        return this.currentPosition;
       }
       return this.currentPosition;
     } catch (error) {
@@ -478,7 +477,7 @@ export class JalousieAccessory {
     try {
       // Check if running using GTSAP1_SHUTTER_run
       const runResponse = await this.sendCommand(`GET:${this.registerPath}.GTSAP1_SHUTTER_run`, '');
-      const isRunning = runResponse.includes(',1') || runResponse.includes(',TRUE');
+      const isRunning = isFlagTrue(runResponse);
 
       // If not running, set to stopped
       if (!isRunning) {
@@ -488,7 +487,7 @@ export class JalousieAccessory {
           this.moving = false;
           this.service.updateCharacteristic(
             this.platform.Characteristic.PositionState,
-            this.POSITION_STATE.STOPPED
+            this.POSITION_STATE.STOPPED,
           );
 
           // If we reached a position close to target, update target to match current
@@ -496,7 +495,7 @@ export class JalousieAccessory {
             this.targetPosition = this.currentPosition;
             this.service.updateCharacteristic(
               this.platform.Characteristic.TargetPosition,
-              this.targetPosition
+              this.targetPosition,
             );
           }
         }
@@ -505,7 +504,7 @@ export class JalousieAccessory {
 
       // If running, check direction
       const upResponse = await this.sendCommand(`GET:${this.registerPath}.GTSAP1_SHUTTER_up`, '');
-      const isMovingUp = upResponse.includes(',1') || upResponse.includes(',TRUE');
+      const isMovingUp = isFlagTrue(upResponse);
 
       if (isMovingUp) {
         if (this.positionState !== this.POSITION_STATE.INCREASING) {
@@ -514,7 +513,7 @@ export class JalousieAccessory {
           this.moving = true;
           this.service.updateCharacteristic(
             this.platform.Characteristic.PositionState,
-            this.POSITION_STATE.INCREASING
+            this.POSITION_STATE.INCREASING,
           );
         }
       } else {
@@ -525,7 +524,7 @@ export class JalousieAccessory {
           this.moving = true;
           this.service.updateCharacteristic(
             this.platform.Characteristic.PositionState,
-            this.POSITION_STATE.DECREASING
+            this.POSITION_STATE.DECREASING,
           );
         }
       }

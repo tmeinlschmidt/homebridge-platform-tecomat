@@ -1,6 +1,11 @@
 import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { JalousieAccessory, JalousieInfo } from './jalousieAccessory';
+import {
+  parseJalousieBlocks,
+  parseQuotedProperty,
+  parseUpDownTime,
+} from './jalousieLogic';
 import * as net from 'net';
 
 /**
@@ -119,42 +124,20 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
   }
 
   /**
-   * Parse LIST response to find jalousie blocks
-   */
-  private parseJalousieBlocks(listResponse: string): string[] {
-    const lines = listResponse.split('\n');
-    const jalousieBlocks = new Set<string>();
-
-    for (const line of lines) {
-      // Check if this is a jalousie control block
-      if (line.includes('.CJALOUSIE.')) {
-        // Extract the base path of the jalousie block
-        const match = line.match(/LIST:(.*?)\.CJALOUSIE\./);
-        if (match && match[1]) {
-          jalousieBlocks.add(match[1] + '.CJALOUSIE');
-        }
-      }
-    }
-
-    return Array.from(jalousieBlocks);
-  }
-
-  /**
    * Get jalousie name from the PLC
    */
   private async getJalousieName(blockPath: string): Promise<string> {
     try {
       const response = await this.sendPlcCommand(`GET:${blockPath}.JALOUSIENAME`);
-      const match = response.match(/GET:.*JALOUSIENAME,"(.*)"/);
-      if (match && match[1]) {
-        return match[1];
-      } else {
-        // Try alternate method - some systems use NAME instead of JALOUSIENAME
-        const altResponse = await this.sendPlcCommand(`GET:${blockPath}.NAME`);
-        const altMatch = altResponse.match(/GET:.*NAME,"(.*)"/);
-        if (altMatch && altMatch[1]) {
-          return altMatch[1];
-        }
+      const name = parseQuotedProperty(response, 'JALOUSIENAME');
+      if (name) {
+        return name;
+      }
+      // Try alternate method - some systems use NAME instead of JALOUSIENAME
+      const altResponse = await this.sendPlcCommand(`GET:${blockPath}.NAME`);
+      const altName = parseQuotedProperty(altResponse, 'NAME');
+      if (altName) {
+        return altName;
       }
       return blockPath.split('.').pop() || 'Unknown Jalousie';
     } catch (error) {
@@ -176,7 +159,7 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
       hasStepControl: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_ROTUP_CONTROL`),
       hasRunProperty: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_run`),
       hasUpProperty: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_up`),
-      hasDownProperty: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_down`)
+      hasDownProperty: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_down`),
     };
   }
 
@@ -193,7 +176,7 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
       this.log.debug(`Received LIST response with ${listResponse.length} characters`);
 
       // Parse the response to find jalousie blocks
-      const jalousieBlocks = this.parseJalousieBlocks(listResponse);
+      const jalousieBlocks = parseJalousieBlocks(listResponse);
       this.log.info(`Found ${jalousieBlocks.length} jalousie blocks`);
 
       // Keep track of discovered devices to remove stale ones
@@ -213,9 +196,9 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
           let upDownTime: number | undefined;
           try {
             const response = await this.sendPlcCommand(`GET:${blockPath}.UPDWTIME`);
-            const match = response.match(/GET:.*\.UPDWTIME,(\d+)/);
-            if (match && match[1]) {
-              upDownTime = parseInt(match[1]);
+            const parsed = parseUpDownTime(response);
+            if (parsed !== null) {
+              upDownTime = parsed;
               this.log.info(`Jalousie ${name} has upDownTime: ${upDownTime}ms`);
             }
           } catch (error) {
@@ -227,7 +210,7 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
             name,
             blockPath,
             hasStepControl: properties.hasStepControl,
-            upDownTime
+            upDownTime,
           };
 
           // Generate a unique id for this jalousie
