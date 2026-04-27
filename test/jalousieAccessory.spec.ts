@@ -137,3 +137,46 @@ describe('stopMovement (no-op when already stopped)', () => {
     }
   });
 });
+
+describe('handleTargetPositionSet — preserves user-requested target', () => {
+  it('does not clobber the new target when stopMovement runs mid-flight', async () => {
+    // Regression for the target-clobber bug: stopMovement used to
+    // reset targetPosition = currentPosition. If handleTargetPositionSet
+    // was called while the jalousie was moving, the new target was
+    // silently lost and the post-timeout snap-to-target jumped back to
+    // the old position.
+    jest.useFakeTimers();
+    try {
+      const transport = jest.fn(async (command: string) => {
+        if (command.endsWith('.POSIT')) {
+          return 'GET:TEST.CJALOUSIE.POSIT,80'; // PLC says 80 → HomeKit 20 (current)
+        }
+        return 'DIFF:1';
+      });
+      const { accessory } = buildAccessory({ transport, upDownTime: 10000 });
+
+      // Force the accessory into INCREASING state at HomeKit position 20,
+      // mid-movement to old target 80.
+      const internals = accessory as unknown as {
+        currentPosition: number;
+        targetPosition: number;
+        positionState: number;
+      };
+      internals.currentPosition = 20;
+      internals.targetPosition = 80;
+      internals.positionState = POSITION_STATE.INCREASING;
+
+      // User changes mind — new target 60.
+      await accessory.handleTargetPositionSet(60);
+
+      // After stopMovement and the start of new movement, target must
+      // still be the user's 60 — not the 20 it would have been reset to
+      // by the bug.
+      expect(accessory.handleTargetPositionGet()).toBe(60);
+      expect(internals.targetPosition).toBe(60);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+});

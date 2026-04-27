@@ -399,6 +399,16 @@ export class JalousieAccessory {
    * No-op when nothing is moving — issuing the toggle in that case
    * would just kick the PLC back into motion (re-sending WEBUP/WEBDW
    * is the start command).
+   *
+   * NOTE: this method intentionally does NOT touch targetPosition.
+   * Callers can be in either of two situations:
+   *   - handleTargetPositionSet: just stored a new target; stopMovement
+   *     resetting it to currentPosition would silently lose the user's
+   *     request and the post-timeout `currentPosition = targetPosition`
+   *     assignment would then snap back to the wrong value.
+   *   - handleHoldPositionSet: target should match the place where
+   *     movement actually stopped — but the caller refreshes
+   *     currentPosition itself afterwards and updates the target there.
    */
   private async stopMovement() {
     if (this.positionState === this.POSITION_STATE.STOPPED) {
@@ -428,15 +438,9 @@ export class JalousieAccessory {
         this.POSITION_STATE.STOPPED,
       );
 
-      // Get current position after stopping
+      // Get current position after stopping. Caller decides whether
+      // to align targetPosition with this new currentPosition.
       await this.updateCurrentPosition();
-
-      // Update target to current position
-      this.targetPosition = this.currentPosition;
-      this.service.updateCharacteristic(
-        this.platform.Characteristic.TargetPosition,
-        this.targetPosition,
-      );
 
       this.log.debug(`${this.jalousieInfo.name} - Movement stopped at position ${this.currentPosition}%`);
     } catch (error) {
