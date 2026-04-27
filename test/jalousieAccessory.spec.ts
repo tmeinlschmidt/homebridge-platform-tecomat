@@ -105,3 +105,35 @@ describe('updateMovementState', () => {
     expect(await accessory.handlePositionStateGet()).toBe(POSITION_STATE.DECREASING);
   });
 });
+
+describe('stopMovement (no-op when already stopped)', () => {
+  it('does not issue an extra POSIT poll when handleTargetPositionSet runs from STOPPED', async () => {
+    // Regression: stopMovement used to call updateCurrentPosition()
+    // and overwrite the target even when nothing was moving. After
+    // the fix, the first transport call should be the SET to start
+    // movement — no GET:POSIT issued beforehand.
+    jest.useFakeTimers();
+    try {
+      const transport = jest.fn(async (command: string) => {
+        if (command.endsWith('.POSIT')) {
+          return 'GET:TEST.CJALOUSIE.POSIT,0';
+        }
+        return 'DIFF:1';
+      });
+      const { accessory } = buildAccessory({ transport, upDownTime: 10000 });
+      // currentPosition defaults to 100 (open). Drive target to 50.
+      // PLC current=0, target=50 → DECREASING (close direction).
+      await accessory.handleTargetPositionSet(50);
+
+      const firstCommand = transport.mock.calls[0][0] as string;
+      expect(firstCommand).toMatch(/^SET:.*\.WEBDW$/);
+      const positBeforeSet = transport.mock.calls
+        .map((c) => c[0] as string)
+        .filter((c) => c.endsWith('.POSIT'));
+      expect(positBeforeSet).toEqual([]);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+});

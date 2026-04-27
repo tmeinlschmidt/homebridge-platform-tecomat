@@ -394,9 +394,16 @@ export class JalousieAccessory {
   }
 
   /**
-   * Stop jalousie movement and update state
+   * Stop jalousie movement and update state.
+   *
+   * No-op when nothing is moving — issuing the toggle in that case
+   * would just kick the PLC back into motion (re-sending WEBUP/WEBDW
+   * is the start command).
    */
   private async stopMovement() {
+    if (this.positionState === this.POSITION_STATE.STOPPED) {
+      return;
+    }
     try {
       // Send the same command again to stop movement
       if (this.positionState === this.POSITION_STATE.INCREASING) {
