@@ -1,4 +1,4 @@
-import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
+import { API, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { JalousieAccessory, JalousieInfo } from './jalousieAccessory';
 import {
@@ -26,7 +26,7 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
   private discoveryInterval?: NodeJS.Timeout;
 
   constructor(
-    public readonly log: Logger,
+    public readonly log: Logging,
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {

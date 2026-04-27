@@ -1,4 +1,4 @@
-import { CharacteristicValue, PlatformAccessory, Service, Logger } from 'homebridge';
+import { CharacteristicValue, PlatformAccessory, Service, Logging } from 'homebridge';
 import { PlcJalousiePlatform } from './platform';
 import * as net from 'net';
 import {
@@ -70,7 +70,7 @@ export class JalousieAccessory {
     private readonly accessory: PlatformAccessory,
     private readonly registerPath: string,
     private readonly jalousieInfo: JalousieInfo,
-    private readonly log: Logger,
+    private readonly log: Logging,
     options: JalousieAccessoryOptions = {},
   ) {
     this.transport = options.transport ?? this.defaultTransport.bind(this);
