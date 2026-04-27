@@ -12,8 +12,8 @@ import * as net from 'net';
  * PLC Jalousie Platform
  */
 export class PlcJalousiePlatform implements DynamicPlatformPlugin {
-  public readonly Service: typeof Service = this.api.hap.Service;
-  public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
+  public readonly Service: typeof Service;
+  public readonly Characteristic: typeof Characteristic;
 
   // Restored cached accessories, keyed by UUID. The template recommends a
   // Map so lookups during discovery are O(1) and stale entries can be
@@ -30,6 +30,9 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {
+    this.Service = this.api.hap.Service;
+    this.Characteristic = this.api.hap.Characteristic;
+
     this.log.debug('Finished initializing platform:', this.config.name);
 
     // When this event is fired it means Homebridge has restored all cached accessories from disk.
