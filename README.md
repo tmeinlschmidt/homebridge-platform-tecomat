@@ -15,7 +15,7 @@ This Homebridge plugin connects to a PLC server to discover and control jalousie
 ## Installation
 
 ```bash
-npm install -g homebridge-plc-jalousie
+npm install -g homebridge-platform-tecomat
 ```
 
 ## Configuration
@@ -26,14 +26,17 @@ Add the following to your Homebridge config.json:
 {
   "platforms": [
     {
-      "platform": "PlcJalousiePlatform",
+      "platform": "HomeBridgePlatformTecomat",
       "name": "PLC Jalousie Controller",
       "ipAddress": "192.168.1.100",
       "port": 4840,
       "pollingInterval": 10,
       "commandTimeout": 5000,
       "discoveryTimeout": 15000,
-      "
+      "autoDiscoveryInterval": 60,
+      "debug": false
+    }
+  ]
 }
 ```
 
@@ -41,7 +44,7 @@ Add the following to your Homebridge config.json:
 
 | Parameter | Description |
 |-----------|-------------|
-| platform | Must be "PlcJalousiePlatform" |
+| platform | Must be "HomeBridgePlatformTecomat" |
 | name | Plugin name as displayed in Homebridge logs |
 | ipAddress | IP address of your PLC server |
 | port | Port number of your PLC server |

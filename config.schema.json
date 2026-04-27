@@ -1,5 +1,5 @@
 {
-  "pluginAlias": "homebridge-platform-tecomat",
+  "pluginAlias": "HomeBridgePlatformTecomat",
   "pluginType": "platform",
   "singular": true,
   "schema": {
