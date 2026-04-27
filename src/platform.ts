@@ -84,8 +84,31 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
     return new Promise((resolve, reject) => {
       const client = new net.Socket();
       let responseData = '';
+      let settled = false;
       const discoveryTimeout = this.config.discoveryTimeout || 15000;
       const debug = this.config.debug || false;
+
+      const timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        client.destroy();
+        reject(new Error(`Discovery command timeout after ${discoveryTimeout}ms: ${command}`));
+      }, discoveryTimeout);
+
+      const settle = (kind: 'resolve' | 'reject', payload: string | Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        if (kind === 'resolve') {
+          resolve(payload as string);
+        } else {
+          reject(payload as Error);
+        }
+      };
 
       client.connect(this.config.port, this.config.ipAddress, () => {
         if (debug) {
@@ -105,21 +128,13 @@ export class PlcJalousiePlatform implements DynamicPlatformPlugin {
         if (debug) {
           this.log.debug(`Command completed: ${command}, response length: ${responseData.length}`);
         }
-        resolve(responseData);
+        settle('resolve', responseData);
       });
 
       client.on('error', (err) => {
         this.log.error(`Error for command ${command}: ${err.message}`);
-        reject(err);
+        settle('reject', err);
       });
-
-      // Set timeout
-      setTimeout(() => {
-        if (client.writable) {
-          client.end();
-          reject(new Error(`Discovery command timeout after ${discoveryTimeout}ms: ${command}`));
-        }
-      }, discoveryTimeout); // Longer timeout for initial discovery
     });
   }
 

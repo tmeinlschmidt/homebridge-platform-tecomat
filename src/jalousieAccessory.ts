@@ -565,7 +565,30 @@ export class JalousieAccessory {
     return new Promise((resolve, reject) => {
       const client = new net.Socket();
       let responseData = '';
+      let settled = false;
       const commandTimeout = this.platform.config.commandTimeout || 5000;
+
+      const timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        client.destroy();
+        reject(new Error(`Command timeout after ${commandTimeout}ms: ${command}`));
+      }, commandTimeout);
+
+      const settle = (kind: 'resolve' | 'reject', payload: string | Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        if (kind === 'resolve') {
+          resolve(payload as string);
+        } else {
+          reject(payload as Error);
+        }
+      };
 
       client.connect(this.platform.config.port, this.platform.config.ipAddress, () => {
         const fullCommand = value ? `${command},${value}\n` : `${command}\n`;
@@ -586,21 +609,13 @@ export class JalousieAccessory {
         if (this.platform.config.debug) {
           this.log.debug(`Response for ${command}: ${responseData.trim()}`);
         }
-        resolve(responseData.trim());
+        settle('resolve', responseData.trim());
       });
 
       client.on('error', (err) => {
         this.log.error(`Error for command ${command}: ${err.message}`);
-        reject(err);
+        settle('reject', err);
       });
-
-      // Set timeout
-      setTimeout(() => {
-        if (client.writable) {
-          client.end();
-          reject(new Error(`Command timeout after ${commandTimeout}ms: ${command}`));
-        }
-      }, commandTimeout);
     });
   }
 }
