@@ -54,6 +54,14 @@ export class JalousieAccessory {
   private positionState: number = this.POSITION_STATE.STOPPED;
   private moving = false;
   private upDownTime = 0; // Time in milliseconds for full movement
+  /**
+   * Monotonic counter incremented on every handleTargetPositionSet
+   * call. Each in-flight invocation captures its value and bails out
+   * after each await if a newer call has superseded it. Without this,
+   * two rapid slider moves would interleave their start/stop commands
+   * and leave the jalousie in an unpredictable position.
+   */
+  private setGeneration = 0;
 
   private readonly transport: JalousieTransport;
 
@@ -216,6 +224,13 @@ export class JalousieAccessory {
       return;
     }
 
+    // Generation guard. Each call captures its own gen; if a newer
+    // call increments setGeneration before this one finishes, this
+    // one bails out at every await boundary so we don't interleave
+    // start/stop commands for two different targets.
+    const myGen = ++this.setGeneration;
+    const isCurrent = () => this.setGeneration === myGen;
+
     this.targetPosition = newTargetPosition;
 
     // Convert HomeKit position to PLC position (invert the value)
@@ -229,10 +244,14 @@ export class JalousieAccessory {
       // Cancel any existing operation timeout
       if (this.operationTimeout) {
         clearTimeout(this.operationTimeout);
+        this.operationTimeout = undefined;
       }
 
       // First stop any current movement
       await this.stopMovement();
+      if (!isCurrent()) {
+        return;
+      }
 
       // Get current PLC position (inverted from HomeKit)
       const plcCurrentPosition = homekitToPlcPosition(this.currentPosition);
@@ -264,6 +283,9 @@ export class JalousieAccessory {
 
         // Send command to move up - only send one command
         const response = await this.transport(`SET:${this.registerPath}.WEBUP`, 'TRUE');
+        if (!isCurrent()) {
+          return;
+        }
         if (!response.includes('DIFF:') && !response.includes(',1')) {
           throw new Error(`Failed to start up movement, response: ${response}`);
         }
@@ -278,6 +300,9 @@ export class JalousieAccessory {
 
         // Send command to move down - only send one command
         const response = await this.transport(`SET:${this.registerPath}.WEBDW`, 'TRUE');
+        if (!isCurrent()) {
+          return;
+        }
         if (!response.includes('DIFF:') && !response.includes(',1')) {
           throw new Error(`Failed to start down movement, response: ${response}`);
         }
@@ -290,6 +315,11 @@ export class JalousieAccessory {
       this.operationTimeout = setTimeout(async () => {
         this.log.debug(`${this.jalousieInfo.name} - Timed movement complete, stopping`);
 
+        // If a newer call has superseded us by now, leave control to it.
+        if (!isCurrent()) {
+          return;
+        }
+
         // Capture the direction we believed we were moving before any
         // subsequent state updates touch positionState.
         const direction = this.positionState;
@@ -299,6 +329,9 @@ export class JalousieAccessory {
         // if the PLC reached its limit / was manually stopped, the
         // toggle would kick it right back into motion.
         if (await this.isPlcRunning()) {
+          if (!isCurrent()) {
+            return;
+          }
           if (direction === this.POSITION_STATE.INCREASING) {
             await this.transport(`SET:${this.registerPath}.WEBUP`, 'TRUE');
           } else if (direction === this.POSITION_STATE.DECREASING) {
@@ -306,6 +339,10 @@ export class JalousieAccessory {
           }
         } else {
           this.log.debug(`${this.jalousieInfo.name} - PLC already stopped, skipping toggle`);
+        }
+
+        if (!isCurrent()) {
+          return;
         }
 
         // Update state after sending the stop command

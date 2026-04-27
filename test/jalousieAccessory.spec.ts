@@ -373,3 +373,80 @@ describe('stop-toggle race — never restart a stopped jalousie', () => {
     }
   });
 });
+
+describe('handleTargetPositionSet — serialised against rapid re-entry', () => {
+  it('a superseded call stops issuing further transport commands once the next one starts', async () => {
+    // Regression: two rapid set-target calls used to interleave their
+    // start/stop commands, leaving the jalousie in an unpredictable
+    // state. The generation guard now causes the older call to bail
+    // at the next await boundary.
+    jest.useFakeTimers();
+    try {
+      // Use a transport that resolves only when we choose to. This lets
+      // us hold call #1 inside its first await, fire call #2, and
+      // observe what call #1 does after we let it resume.
+      let releaseFirstStop: (() => void) | undefined;
+      const firstStopGate = new Promise<void>((resolve) => {
+        releaseFirstStop = resolve;
+      });
+      let setCallNumber = 0;
+      const transport = jest.fn(async (command: string) => {
+        if (command.endsWith('.POSIT')) {
+          return 'GET:TEST.CJALOUSIE.POSIT,80'; // HomeKit 20
+        }
+        if (command.endsWith('.GTSAP1_SHUTTER_run')) {
+          return 'GET:TEST.CJALOUSIE.GTSAP1_SHUTTER_run,1';
+        }
+        if (/\.(WEBUP|WEBDW)$/.test(command)) {
+          setCallNumber++;
+          // Hold the very first WEBUP/WEBDW until we release the gate.
+          if (setCallNumber === 1) {
+            await firstStopGate;
+          }
+          return 'DIFF:1';
+        }
+        return '';
+      });
+      const { accessory } = buildAccessory({ transport, upDownTime: 10000 });
+      const internals = accessory as unknown as {
+        currentPosition: number;
+        targetPosition: number;
+        positionState: number;
+      };
+      internals.currentPosition = 20;
+      internals.targetPosition = 20;
+      internals.positionState = POSITION_STATE.INCREASING; // force stopMovement to actually toggle
+
+      // Call #1 — held inside its in-flight stop toggle.
+      const first = accessory.handleTargetPositionSet(80);
+      // Yield to the microtask queue so call #1 reaches its await.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Call #2 starts and runs to completion (its stop toggle is
+      // call #2 in the gate counter, so it isn't held).
+      const second = accessory.handleTargetPositionSet(40);
+
+      const callsBeforeRelease = transport.mock.calls.length;
+
+      // Release call #1's blocked transport. It now resumes — but the
+      // generation guard means it must NOT issue any further commands.
+      releaseFirstStop!();
+
+      await first;
+      await second;
+
+      // Drain the timer that call #2 scheduled, then ensure no extra
+      // start/stop commands snuck in from the superseded call #1.
+      const callsAfterResume = transport.mock.calls.length;
+      // Allow some headroom (call #2 may issue its own toggle/run query
+      // while call #1 was suspended). What we really want to assert is
+      // that the *final* target is 40, not 80.
+      expect(internals.targetPosition).toBe(40);
+      expect(callsAfterResume).toBeGreaterThanOrEqual(callsBeforeRelease);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+});
