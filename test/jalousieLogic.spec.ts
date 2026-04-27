@@ -90,13 +90,33 @@ describe('parseIntProperty / parsePosit / parseUpDownTime', () => {
     expect(parseUpDownTime('')).toBeNull();
   });
 
-  it('returns null when value is not an integer', () => {
-    // current parser only matches \d+ — non-digit values yield null
+  it('returns null on garbage values', () => {
     expect(parsePosit('GET:foo.POSIT,abc')).toBeNull();
   });
 
   it('handles arbitrary property names safely', () => {
     expect(parseIntProperty('GET:x.y.z.WHATEVER,7', 'WHATEVER')).toBe(7);
+  });
+});
+
+describe('parsePosit (lenient + clamped)', () => {
+  it('accepts decimal values and rounds to nearest integer', () => {
+    expect(parsePosit('GET:foo.POSIT,42.4')).toBe(42);
+    expect(parsePosit('GET:foo.POSIT,42.6')).toBe(43);
+  });
+
+  it('accepts signed values and clamps to 0..100', () => {
+    expect(parsePosit('GET:foo.POSIT,-5')).toBe(0);
+    expect(parsePosit('GET:foo.POSIT,+150')).toBe(100);
+  });
+
+  it('tolerates surrounding whitespace', () => {
+    expect(parsePosit('GET:foo.POSIT,  17.0  ')).toBe(17);
+  });
+
+  it('still returns null for non-numeric replies', () => {
+    expect(parsePosit('GET:foo.POSIT,oops')).toBeNull();
+    expect(parsePosit('')).toBeNull();
   });
 });
 

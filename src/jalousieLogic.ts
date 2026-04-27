@@ -89,12 +89,45 @@ export function parseIntProperty(response: string, prop: string): number | null 
   return Number.isNaN(n) ? null : n;
 }
 
+/**
+ * Extract a numeric property value from a `GET:...<PROP>,<n>` reply,
+ * tolerating optional sign, decimal point and surrounding whitespace.
+ * Returns null when the field is missing or unparseable.
+ */
+export function parseNumericProperty(response: string, prop: string): number | null {
+  if (!response) {
+    return null;
+  }
+  const re = new RegExp(`GET:.*\\.${escapeRegExp(prop)},\\s*([+-]?\\d+(?:\\.\\d+)?)`);
+  const match = response.match(re);
+  if (!match || !match[1]) {
+    return null;
+  }
+  const n = Number(match[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function parseUpDownTime(response: string): number | null {
   return parseIntProperty(response, 'UPDWTIME');
 }
 
+/**
+ * Position is a percentage 0..100. Tolerate float/signed PLC replies and
+ * clamp/round to a valid integer percentage.
+ */
 export function parsePosit(response: string): number | null {
-  return parseIntProperty(response, 'POSIT');
+  const n = parseNumericProperty(response, 'POSIT');
+  if (n === null) {
+    return null;
+  }
+  const rounded = Math.round(n);
+  if (rounded < 0) {
+    return 0;
+  }
+  if (rounded > 100) {
+    return 100;
+  }
+  return rounded;
 }
 
 /**
