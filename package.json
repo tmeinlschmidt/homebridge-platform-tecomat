@@ -1,22 +1,33 @@
 {
   "private": true,
-  "displayName": "Tecomat bridge",
+  "displayName": "Tecomat",
   "name": "homebridge-platform-tecomat",
   "version": "0.0.5",
-  "description": "A simple bridge to tecomat iFoxtrot controls",
+  "description": "Homebridge dynamic platform plugin for Teco / Tecomat iFoxtrot PLCs — auto-discovers jalousie blocks and exposes them as HomeKit window coverings.",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/tmeinlschmidt/homebridge-platform-tecomat#readme",
   "repository": {
     "type": "git",
-    "url": "git://github.com/tmeinlschmidt/homebridge-platform-tecomat.git"
+    "url": "https://github.com/tmeinlschmidt/homebridge-platform-tecomat.git"
   },
   "bugs": {
     "url": "https://github.com/tmeinlschmidt/homebridge-platform-tecomat/issues"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/tmeinlschmidt"
   },
   "engines": {
     "node": "^20.18.0 || ^22.10.0 || ^24.0.0",
     "homebridge": "^1.8.0 || ^2.0.0-beta.0"
   },
   "main": "dist/index.js",
+  "files": [
+    "dist",
+    "config.schema.json",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "lint": "eslint . --max-warnings=0",
     "watch": "npm run build && npm link && nodemon",
@@ -27,8 +38,13 @@
   "keywords": [
     "homebridge-plugin",
     "tecomat",
+    "teco",
+    "ifoxtrot",
     "plc",
-    "jalousie"
+    "jalousie",
+    "blinds",
+    "shutter",
+    "window-covering"
   ],
   "devDependencies": {
     "@eslint/js": "^9.39.4",
