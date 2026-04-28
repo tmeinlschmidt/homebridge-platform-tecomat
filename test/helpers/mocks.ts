@@ -30,10 +30,12 @@ class MockCharacteristic {
     this.listeners.onGet = fn;
     return this;
   }
+
   onSet(fn: (v: unknown) => unknown) {
     this.listeners.onSet = fn;
     return this;
   }
+
   setValue(v: unknown) {
     this.value = v;
   }
@@ -87,10 +89,22 @@ class MockAccessory {
 
 class MockLogger {
   public messages: Array<{ level: string; msg: string }> = [];
-  info(msg: string) { this.messages.push({ level: 'info', msg }); }
-  warn(msg: string) { this.messages.push({ level: 'warn', msg }); }
-  error(msg: string) { this.messages.push({ level: 'error', msg }); }
-  debug(msg: string) { this.messages.push({ level: 'debug', msg }); }
+  info(msg: string) {
+    this.messages.push({ level: 'info', msg });
+  }
+
+  warn(msg: string) {
+    this.messages.push({ level: 'warn', msg });
+  }
+
+  error(msg: string) {
+    this.messages.push({ level: 'error', msg });
+  }
+
+  debug(msg: string) {
+    this.messages.push({ level: 'debug', msg });
+  }
+
   log() { /* noop */ }
 }
 
@@ -99,6 +113,7 @@ class MockPlatform {
     WindowCovering: 'WindowCovering',
     AccessoryInformation: 'AccessoryInformation',
   };
+
   Characteristic = C;
   config: Record<string, unknown> = { pollingInterval: 10, commandTimeout: 5000 };
 }
