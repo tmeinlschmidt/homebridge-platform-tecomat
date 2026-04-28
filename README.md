@@ -1,150 +1,114 @@
-
-<p align="center">
-
-<img src="https://github.com/homebridge/branding/raw/master/logos/homebridge-wordmark-logo-vertical.png" width="150">
-
-</p>
-
-
-# Homebridge Platform Plugin Template
-
-This is a template Homebridge platform plugin and can be used as a base to help you get started developing your own plugin.
-
-This template should be used in conjunction with the [developer documentation](https://developers.homebridge.io/). A full list of all supported service types, and their characteristics is available on this site.
-
-## Clone As Template
-
-Click the link below to create a new GitHub Repository using this template, or click the *Use This Template* button above.
-
 <span align="center">
 
-### [Create New Repository From Template](https://github.com/homebridge/homebridge-plugin-template/generate)
+# homebridge-platform-tecomat
+
+[![npm version](https://img.shields.io/npm/v/homebridge-platform-tecomat.svg)](https://www.npmjs.com/package/homebridge-platform-tecomat)
+[![Node.js](https://img.shields.io/node/v/homebridge-platform-tecomat.svg)](https://nodejs.org)
+[![License](https://img.shields.io/npm/l/homebridge-platform-tecomat.svg)](LICENSE)
+
+A [Homebridge](https://homebridge.io) dynamic platform plugin for **Teco / Tecomat iFoxtrot** PLCs. Auto-discovers jalousie / blind blocks (`CJALOUSIE`) and exposes each one as a HomeKit `WindowCovering` accessory.
 
 </span>
 
-## Setup Development Environment
+## Features
 
-To develop Homebridge plugins you must have Node.js 12 or later installed, and a modern code editor such as [VS Code](https://code.visualstudio.com/). This plugin template uses [TypeScript](https://www.typescriptlang.org/) to make development easier and comes with pre-configured settings for [VS Code](https://code.visualstudio.com/) and ESLint. If you are using VS Code install these extensions:
+- Auto-discovery of every `CJALOUSIE` block on the PLC; one HomeKit accessory per blind
+- Up / down movement and absolute position via the standard HomeKit slider
+- Periodic state polling with verified stop semantics (the plugin won't kick a stopped jalousie back into motion)
+- Configurable polling interval, command/discovery timeouts and rediscovery cadence
+- Fully unit-tested state machine and PLC parsers
 
-* [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint)
+## Installation
 
-## Install Development Dependencies
+The recommended way to install Homebridge plugins is the **Homebridge UI** — search for `homebridge-platform-tecomat` in the Plugins tab and click *Install*. The UI then renders the configuration form from `config.schema.json`.
 
-Using a terminal, navigate to the project folder and run this command to install the development dependencies:
+To install from the command line:
 
+```bash
+npm install -g homebridge-platform-tecomat
 ```
+
+## Configuration
+
+Most users should configure the plugin through the Homebridge UI. To edit `config.json` directly, add a block under `platforms`:
+
+```json
+{
+  "platforms": [
+    {
+      "platform": "HomeBridgePlatformTecomat",
+      "name": "PLC Jalousie Controller",
+      "ipAddress": "192.168.1.100",
+      "port": 4840,
+      "pollingInterval": 10,
+      "commandTimeout": 5000,
+      "discoveryTimeout": 15000,
+      "autoDiscoveryInterval": 60,
+      "debug": false
+    }
+  ]
+}
+```
+
+The `platform` value must be exactly `HomeBridgePlatformTecomat` — that's the alias declared in both `config.schema.json` and `src/settings.ts`.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `platform` | string | — | Must be `HomeBridgePlatformTecomat` |
+| `name` | string | — | Display name used in Homebridge logs |
+| `ipAddress` | string | — | IP of the PLC's TCP server |
+| `port` | integer | — | Port of the PLC's TCP server |
+| `pollingInterval` | integer (s) | `10` | How often to refresh position/state from the PLC |
+| `commandTimeout` | integer (ms) | `5000` | Per-command socket timeout |
+| `discoveryTimeout` | integer (ms) | `15000` | Timeout for the initial `LIST:` discovery command |
+| `autoDiscoveryInterval` | integer (min) | `60` | Rerun discovery every N minutes (0 disables) |
+| `debug` | boolean | `false` | Verbose logging of every PLC command/response |
+
+## How it works
+
+1. Sends `LIST:` to the PLC and parses the response for `*.CJALOUSIE.*` blocks.
+2. For each block, fetches `JALOUSIENAME` (or `NAME` as fallback) and `UPDWTIME`.
+3. Exposes each jalousie as a HomeKit `WindowCovering` service with `CurrentPosition`, `TargetPosition`, `PositionState` and `HoldPosition` characteristics.
+4. Drives motion with `SET:<path>.WEBUP,TRUE` / `SET:<path>.WEBDW,TRUE` and times the stop using `UPDWTIME`. Before issuing a stop toggle the plugin verifies `GTSAP1_SHUTTER_run` so it never restarts a jalousie that has already reached its limit.
+
+### Position conventions
+
+- HomeKit: `0` = fully closed, `100` = fully open
+- PLC: `100` = fully closed, `0` = fully open
+
+The plugin inverts at the boundary so the HomeKit slider feels natural.
+
+## PLC protocol
+
+The plugin speaks a thin newline-delimited TCP protocol:
+
+- `LIST:` — list available registers
+- `GET:<register>` — read a register
+- `SET:<register>,<value>` — write a register
+
+## Development
+
+```bash
+git clone https://github.com/tmeinlschmidt/homebridge-platform-tecomat.git
+cd homebridge-platform-tecomat
 npm install
-```
-
-## Update package.json
-
-Open the [`package.json`](./package.json) and change the following attributes:
-
-* `name` - this should be prefixed with `homebridge-` or `@username/homebridge-` and contain no spaces or special characters apart from a dashes
-* `displayName` - this is the "nice" name displayed in the Homebridge UI
-* `repository.url` - Link to your GitHub repo
-* `bugs.url` - Link to your GitHub repo issues page
-
-When you are ready to publish the plugin you should set `private` to false, or remove the attribute entirely.
-
-## Update Plugin Defaults
-
-Open the [`src/settings.ts`](./src/settings.ts) file and change the default values:
-
-* `PLATFORM_NAME` - Set this to be the name of your platform. This is the name of the platform that users will use to register the plugin in the Homebridge `config.json`.
-* `PLUGIN_NAME` - Set this to be the same name you set in the [`package.json`](./package.json) file. 
-
-Open the [`config.schema.json`](./config.schema.json) file and change the following attribute:
-
-* `pluginAlias` - set this to match the `PLATFORM_NAME` you defined in the previous step.
-
-## Build Plugin
-
-TypeScript needs to be compiled into JavaScript before it can run. The following command will compile the contents of your [`src`](./src) directory and put the resulting code into the `dist` folder.
-
-```
+npm test          # 47 unit + integration tests
+npm run lint
 npm run build
+npm run watch     # rebuilds and runs homebridge against test/hbConfig
 ```
 
-## Link To Homebridge
+Pure logic (position math, response parsers, state machine) lives in `src/jalousieLogic.ts`. The accessory class accepts an injected transport so the suite under `test/` can drive it without real network IO.
 
-Run this command so your global install of Homebridge can discover the plugin in your development environment:
+## Troubleshooting
 
-```
-npm link
-```
+1. Set `"debug": true` in your config and restart Homebridge.
+2. Check Homebridge logs — every PLC request/response is dumped in debug mode.
+3. Verify `ipAddress` / `port` and that the PLC's TCP server accepts unauthenticated connections from your Homebridge host.
+4. If the slider lags behind reality, lower `pollingInterval`.
 
-You can now start Homebridge, use the `-D` flag so you can see debug log messages in your plugin:
+## License
 
-```
-homebridge -D
-```
-
-## Watch For Changes and Build Automatically
-
-If you want to have your code compile automatically as you make changes, and restart Homebridge automatically between changes you can run:
-
-```
-npm run watch
-```
-
-This will launch an instance of Homebridge in debug mode which will restart every time you make a change to the source code. It will load the config stored in the default location under `~/.homebridge`. You may need to stop other running instances of Homebridge while using this command to prevent conflicts. You can adjust the Homebridge startup command in the [`nodemon.json`](./nodemon.json) file.
-
-## Customise Plugin
-
-You can now start customising the plugin template to suit your requirements.
-
-* [`src/platform.ts`](./src/platform.ts) - this is where your device setup and discovery should go.
-* [`src/platformAccessory.ts`](./src/platformAccessory.ts) - this is where your accessory control logic should go, you can rename or create multiple instances of this file for each accessory type you need to implement as part of your platform plugin. You can refer to the [developer documentation](https://developers.homebridge.io/) to see what characteristics you need to implement for each service type.
-* [`config.schema.json`](./config.schema.json) - update the config schema to match the config you expect from the user. See the [Plugin Config Schema Documentation](https://developers.homebridge.io/#/config-schema).
-
-## Versioning Your Plugin
-
-Given a version number `MAJOR`.`MINOR`.`PATCH`, such as `1.4.3`, increment the:
-
-1. **MAJOR** version when you make breaking changes to your plugin,
-2. **MINOR** version when you add functionality in a backwards compatible manner, and
-3. **PATCH** version when you make backwards compatible bug fixes.
-
-You can use the `npm version` command to help you with this:
-
-```bash
-# major update / breaking changes
-npm version major
-
-# minor update / new features
-npm version update
-
-# patch / bugfixes
-npm version patch
-```
-
-## Publish Package
-
-When you are ready to publish your plugin to [npm](https://www.npmjs.com/), make sure you have removed the `private` attribute from the [`package.json`](./package.json) file then run:
-
-```
-npm publish
-```
-
-If you are publishing a scoped plugin, i.e. `@username/homebridge-xxx` you will need to add `--access=public` to command the first time you publish.
-
-#### Publishing Beta Versions
-
-You can publish *beta* versions of your plugin for other users to test before you release it to everyone.
-
-```bash
-# create a new pre-release version (eg. 2.1.0-beta.1)
-npm version prepatch --preid beta
-
-# publsh to @beta
-npm publish --tag=beta
-```
-
-Users can then install the  *beta* version by appending `@beta` to the install command, for example:
-
-```
-sudo npm install -g homebridge-example-plugin@beta
-```
-
-
+[Apache-2.0](LICENSE)

@@ -1,0 +1,21 @@
+{
+  "bridge": {
+    "name": "Homebridge Tecomat Dev",
+    "username": "CC:22:3D:E3:CE:30",
+    "port": 51826,
+    "pin": "031-45-154"
+  },
+  "platforms": [
+    {
+      "platform": "HomeBridgePlatformTecomat",
+      "name": "PLC Jalousie Controller",
+      "ipAddress": "192.168.1.100",
+      "port": 4840,
+      "pollingInterval": 10,
+      "commandTimeout": 5000,
+      "discoveryTimeout": 15000,
+      "autoDiscoveryInterval": 60,
+      "debug": true
+    }
+  ]
+}

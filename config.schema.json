@@ -9,7 +9,52 @@
         "title": "Name",
         "type": "string",
         "required": true,
-        "default": "Example Dynamic Platform"
+        "default": "PLC Jalousie Controller"
+      },
+      "ipAddress": {
+        "title": "PLC IP Address",
+        "type": "string",
+        "format": "ipv4",
+        "required": true,
+        "default": "192.168.1.100"
+      },
+      "port": {
+        "title": "PLC Port",
+        "type": "integer",
+        "required": true,
+        "default": 4840,
+        "description": "Port number of your PLC server (1-65535)"
+      },
+      "pollingInterval": {
+        "title": "Polling Interval (seconds)",
+        "type": "integer",
+        "default": 10,
+        "description": "How often to poll the PLC for state updates (in seconds, recommended 5-300)"
+      },
+      "commandTimeout": {
+        "title": "Command Timeout (ms)",
+        "type": "integer",
+        "default": 5000,
+        "description": "Timeout for PLC commands in milliseconds (recommended 1000-30000)"
+      },
+      "discoveryTimeout": {
+        "title": "Discovery Timeout (ms)",
+        "type": "integer",
+        "default": 15000,
+        "description": "Timeout for initial discovery commands in milliseconds (recommended 5000-60000)"
+      },
+      "autoDiscoveryInterval": {
+        "title": "Auto-Discovery Interval (minutes)",
+        "type": "integer",
+        "default": 60,
+        "description": "Interval for automatic rediscovery of devices (0 to disable, recommended 0-1440)"
+      },
+      "debug": {
+        "title": "Debug Mode",
+        "type": "boolean",
+        "required": false,
+        "default": false,
+        "description": "Enable additional logging for debugging"
       }
     }
   }

@@ -1,25 +1,38 @@
-import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
-
+import { API, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
-import { ExamplePlatformAccessory } from './platformAccessory';
+import { JalousieAccessory, JalousieInfo } from './jalousieAccessory';
+import {
+  parseJalousieBlocks,
+  parseQuotedProperty,
+  parseUpDownTime,
+} from './jalousieLogic';
+import * as net from 'net';
 
 /**
- * HomebridgePlatform
- * This class is the main constructor for your plugin, this is where you should
- * parse the user config and discover/register accessories with Homebridge.
+ * PLC Jalousie Platform
  */
-export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
-  public readonly Service: typeof Service = this.api.hap.Service;
-  public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
+export class PlcJalousiePlatform implements DynamicPlatformPlugin {
+  public readonly Service: typeof Service;
+  public readonly Characteristic: typeof Characteristic;
 
-  // this is used to track restored cached accessories
-  public readonly accessories: PlatformAccessory[] = [];
+  // Restored cached accessories, keyed by UUID. The template recommends a
+  // Map so lookups during discovery are O(1) and stale entries can be
+  // pruned without splicing an array.
+  public readonly accessories: Map<string, PlatformAccessory> = new Map();
+
+  // map to track jalousie accessory instances
+  private readonly jalousieAccessories: Map<string, JalousieAccessory> = new Map();
+
+  private discoveryInterval?: NodeJS.Timeout;
 
   constructor(
-    public readonly log: Logger,
+    public readonly log: Logging,
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {
+    this.Service = this.api.hap.Service;
+    this.Characteristic = this.api.hap.Characteristic;
+
     this.log.debug('Finished initializing platform:', this.config.name);
 
     // When this event is fired it means Homebridge has restored all cached accessories from disk.
@@ -28,8 +41,33 @@ export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
     // to start discovery of new accessories.
     this.api.on('didFinishLaunching', () => {
       log.debug('Executed didFinishLaunching callback');
-      // run the method to discover / register your devices as accessories
+
+      // Run initial device discovery
       this.discoverDevices();
+
+      // Set up periodic rediscovery if enabled
+      const autoDiscoveryInterval = this.config.autoDiscoveryInterval as number;
+      if (autoDiscoveryInterval && autoDiscoveryInterval > 0) {
+        this.log.info(`Setting up automatic device rediscovery every ${autoDiscoveryInterval} minutes`);
+        this.discoveryInterval = setInterval(() => {
+          this.log.info('Running scheduled device rediscovery...');
+          this.discoverDevices();
+        }, autoDiscoveryInterval * 60 * 1000); // Convert minutes to milliseconds
+      }
+    });
+
+    // Clean up on shutdown
+    this.api.on('shutdown', () => {
+      if (this.discoveryInterval) {
+        clearInterval(this.discoveryInterval);
+      }
+
+      // Clean up all accessories
+      for (const accessory of this.jalousieAccessories.values()) {
+        accessory.teardown();
+      }
+
+      this.log.info('Platform shutdown');
     });
   }
 
@@ -41,76 +79,231 @@ export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
     this.log.info('Loading accessory from cache:', accessory.displayName);
 
     // add the restored accessory to the accessories cache so we can track if it has already been registered
-    this.accessories.push(accessory);
+    this.accessories.set(accessory.UUID, accessory);
   }
 
   /**
-   * This is an example method showing how to register discovered accessories.
-   * Accessories must only be registered once, previously created accessories
-   * must not be registered again to prevent "duplicate UUID" errors.
+   * Send a command to the PLC and wait for response
    */
-  discoverDevices() {
+  private async sendPlcCommand(command: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const client = new net.Socket();
+      let responseData = '';
+      let settled = false;
+      const discoveryTimeout = this.config.discoveryTimeout || 15000;
+      const debug = this.config.debug || false;
 
-    // EXAMPLE ONLY
-    // A real plugin you would discover accessories from the local network, cloud services
-    // or a user-defined array in the platform config.
-    const exampleDevices = [
-      {
-        exampleUniqueId: 'ABCD',
-        exampleDisplayName: 'Bedroom',
-      },
-      {
-        exampleUniqueId: 'EFGH',
-        exampleDisplayName: 'Kitchen',
-      },
-    ];
+      const timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        client.destroy();
+        reject(new Error(`Discovery command timeout after ${discoveryTimeout}ms: ${command}`));
+      }, discoveryTimeout);
 
-    // loop over the discovered devices and register each one if it has not already been registered
-    for (const device of exampleDevices) {
+      const settle = (kind: 'resolve' | 'reject', payload: string | Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        if (kind === 'resolve') {
+          resolve(payload as string);
+        } else {
+          reject(payload as Error);
+        }
+      };
 
-      // generate a unique id for the accessory this should be generated from
-      // something globally unique, but constant, for example, the device serial
-      // number or MAC address
-      const uuid = this.api.hap.uuid.generate(device.exampleUniqueId);
+      client.connect(this.config.port, this.config.ipAddress, () => {
+        if (debug) {
+          this.log.debug(`Connected to PLC for command: ${command}`);
+        }
+        client.write(`${command}\n`);
+      });
 
-      // see if an accessory with the same uuid has already been registered and restored from
-      // the cached devices we stored in the `configureAccessory` method above
-      const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
+      client.on('data', (data) => {
+        responseData += data.toString();
+        if (responseData.includes('\n')) {
+          client.end();
+        }
+      });
 
-      if (existingAccessory) {
-        // the accessory already exists
-        this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
+      client.on('close', () => {
+        if (debug) {
+          this.log.debug(`Command completed: ${command}, response length: ${responseData.length}`);
+        }
+        settle('resolve', responseData);
+      });
 
-        // if you need to update the accessory.context then you should run `api.updatePlatformAccessories`. eg.:
-        // existingAccessory.context.device = device;
-        // this.api.updatePlatformAccessories([existingAccessory]);
+      client.on('error', (err) => {
+        this.log.error(`Error for command ${command}: ${err.message}`);
+        settle('reject', err);
+      });
+    });
+  }
 
-        // create the accessory handler for the restored accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, existingAccessory);
-
-        // it is possible to remove platform accessories at any time using `api.unregisterPlatformAccessories`, eg.:
-        // remove platform accessories when no longer present
-        // this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existingAccessory]);
-        // this.log.info('Removing existing accessory from cache:', existingAccessory.displayName);
-      } else {
-        // the accessory does not yet exist, so we need to create it
-        this.log.info('Adding new accessory:', device.exampleDisplayName);
-
-        // create a new accessory
-        const accessory = new this.api.platformAccessory(device.exampleDisplayName, uuid);
-
-        // store a copy of the device object in the `accessory.context`
-        // the `context` property can be used to store any data about the accessory you may need
-        accessory.context.device = device;
-
-        // create the accessory handler for the newly create accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, accessory);
-
-        // link the accessory to your platform
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+  /**
+   * Get jalousie name from the PLC
+   */
+  private async getJalousieName(blockPath: string): Promise<string> {
+    try {
+      const response = await this.sendPlcCommand(`GET:${blockPath}.JALOUSIENAME`);
+      const name = parseQuotedProperty(response, 'JALOUSIENAME');
+      if (name) {
+        return name;
       }
+      // Try alternate method - some systems use NAME instead of JALOUSIENAME
+      const altResponse = await this.sendPlcCommand(`GET:${blockPath}.NAME`);
+      const altName = parseQuotedProperty(altResponse, 'NAME');
+      if (altName) {
+        return altName;
+      }
+      return blockPath.split('.').pop() || 'Unknown Jalousie';
+    } catch (error) {
+      this.log.error(`Error getting jalousie name for ${blockPath}:`, error);
+      return blockPath.split('.').pop() || 'Unknown Jalousie';
+    }
+  }
+
+  /**
+   * Check if the jalousie block has step control and other required properties
+   */
+  private hasRequiredProperties(listResponse: string, blockPath: string): {
+    hasStepControl: boolean;
+    hasRunProperty: boolean;
+    hasUpProperty: boolean;
+    hasDownProperty: boolean;
+  } {
+    return {
+      hasStepControl: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_ROTUP_CONTROL`),
+      hasRunProperty: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_run`),
+      hasUpProperty: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_up`),
+      hasDownProperty: listResponse.includes(`${blockPath}.GTSAP1_SHUTTER_down`),
+    };
+  }
+
+  /**
+   * Discover jalousie devices from PLC
+   */
+  async discoverDevices() {
+    try {
+      this.log.info('Discovering jalousie devices...');
+      this.log.info(`Connecting to PLC at ${this.config.ipAddress}:${this.config.port}`);
+
+      // Send LIST command to get all registers
+      const listResponse = await this.sendPlcCommand('LIST:');
+      this.log.debug(`Received LIST response with ${listResponse.length} characters`);
+
+      // Parse the response to find jalousie blocks
+      const jalousieBlocks = parseJalousieBlocks(listResponse);
+      this.log.info(`Found ${jalousieBlocks.length} jalousie blocks`);
+
+      // Keep track of discovered devices to remove stale ones
+      const activeAccessories = new Set<string>();
+
+      // Process each jalousie block
+      for (const blockPath of jalousieBlocks) {
+        try {
+          // Get the name of this jalousie
+          const name = await this.getJalousieName(blockPath);
+          this.log.info(`Found jalousie: ${name} at path ${blockPath}`);
+
+          // Check if this jalousie has required properties
+          const properties = this.hasRequiredProperties(listResponse, blockPath);
+
+          // Fetch the up-down time for this jalousie
+          let upDownTime: number | undefined;
+          try {
+            const response = await this.sendPlcCommand(`GET:${blockPath}.UPDWTIME`);
+            const parsed = parseUpDownTime(response);
+            if (parsed !== null) {
+              upDownTime = parsed;
+              this.log.info(`Jalousie ${name} has upDownTime: ${upDownTime}ms`);
+            }
+          } catch (error) {
+            this.log.warn(`Could not get UPDWTIME for ${name}: ${error}`);
+          }
+
+          // Create jalousie info object
+          const jalousieInfo: JalousieInfo = {
+            name,
+            blockPath,
+            hasStepControl: properties.hasStepControl,
+            upDownTime,
+          };
+
+          // Generate a unique id for this jalousie
+          const uuid = this.api.hap.uuid.generate(blockPath);
+          activeAccessories.add(uuid);
+
+          // Check if an accessory with the same uuid has already been registered and restored from
+          // the cached devices we stored in the `configureAccessory` method above
+          const existingAccessory = this.accessories.get(uuid);
+
+          if (existingAccessory) {
+            // Restore existing accessory
+            this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
+
+            // Clean up any existing accessory instance
+            const existingInstance = this.jalousieAccessories.get(uuid);
+            if (existingInstance) {
+              existingInstance.teardown();
+            }
+
+            // Update accessory context
+            existingAccessory.context.jalousieInfo = jalousieInfo;
+            existingAccessory.displayName = name;
+
+            // Create the accessory handler
+            const jalousieAccessory = new JalousieAccessory(this, existingAccessory, blockPath, jalousieInfo, this.log);
+            this.jalousieAccessories.set(uuid, jalousieAccessory);
+          } else {
+            // Create a new accessory
+            this.log.info('Adding new accessory:', name);
+
+            // Create the accessory
+            const accessory = new this.api.platformAccessory(name, uuid);
+
+            // Store jalousie info in the accessory context
+            accessory.context.jalousieInfo = jalousieInfo;
+
+            // Create the accessory handler
+            const jalousieAccessory = new JalousieAccessory(this, accessory, blockPath, jalousieInfo, this.log);
+            this.jalousieAccessories.set(uuid, jalousieAccessory);
+            this.accessories.set(uuid, accessory);
+
+            // Register the accessory
+            this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+          }
+        } catch (error) {
+          this.log.error(`Error processing jalousie block ${blockPath}:`, error);
+        }
+      }
+
+      // Remove accessories that no longer exist
+      for (const [uuid, accessory] of this.accessories) {
+        if (activeAccessories.has(uuid)) {
+          continue;
+        }
+        this.log.info('Removing accessory no longer present:', accessory.displayName);
+
+        // Clean up accessory instance
+        const instance = this.jalousieAccessories.get(uuid);
+        if (instance) {
+          instance.teardown();
+          this.jalousieAccessories.delete(uuid);
+        }
+
+        // Unregister the accessory and drop it from the local cache so
+        // a re-run of discovery doesn't try to restore it again.
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.accessories.delete(uuid);
+      }
+
+      this.log.info('Device discovery completed');
+    } catch (error) {
+      this.log.error('Error discovering devices:', error);
     }
   }
 }

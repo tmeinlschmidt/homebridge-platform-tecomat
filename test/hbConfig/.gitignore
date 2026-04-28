@@ -1,0 +1,5 @@
+# Homebridge writes its persistence (cached accessories, etc.) into
+# the user storage path. Keep only the dev config.json under VCS.
+*
+!.gitignore
+!config.json
