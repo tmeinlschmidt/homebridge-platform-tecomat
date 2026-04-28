@@ -1,5 +1,5 @@
 {
-  "private": true,
+  "private": false,
   "displayName": "Tecomat",
   "name": "homebridge-platform-tecomat",
   "version": "0.0.5",
