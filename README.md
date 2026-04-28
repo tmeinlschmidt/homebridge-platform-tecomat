@@ -1,18 +1,28 @@
-# Homebridge PLC Jalousie Plugin
+<span align="center">
 
-This Homebridge plugin connects to a PLC server to discover and control jalousies (blinds/shutters). It automatically identifies jalousie devices from your PLC server and creates individual HomeKit accessories for each one.
+# homebridge-platform-tecomat
+
+[![npm version](https://img.shields.io/npm/v/homebridge-platform-tecomat.svg)](https://www.npmjs.com/package/homebridge-platform-tecomat)
+[![Node.js](https://img.shields.io/node/v/homebridge-platform-tecomat.svg)](https://nodejs.org)
+[![License](https://img.shields.io/npm/l/homebridge-platform-tecomat.svg)](LICENSE)
+
+A [Homebridge](https://homebridge.io) dynamic platform plugin for **Teco / Tecomat iFoxtrot** PLCs. Auto-discovers jalousie / blind blocks (`CJALOUSIE`) and exposes each one as a HomeKit `WindowCovering` accessory.
+
+</span>
 
 ## Features
 
-- Automatic discovery of all jalousie devices from your PLC
-- Individual accessory for each jalousie with proper naming
-- Controls for up/down movement and position setting
-- Real-time status updates with configurable polling interval
-- Support for step-by-step control for precise positioning
-- Automatic rediscovery to detect new devices
-- Detailed logging for troubleshooting
+- Auto-discovery of every `CJALOUSIE` block on the PLC; one HomeKit accessory per blind
+- Up / down movement and absolute position via the standard HomeKit slider
+- Periodic state polling with verified stop semantics (the plugin won't kick a stopped jalousie back into motion)
+- Configurable polling interval, command/discovery timeouts and rediscovery cadence
+- Fully unit-tested state machine and PLC parsers
 
 ## Installation
+
+The recommended way to install Homebridge plugins is the **Homebridge UI** — search for `homebridge-platform-tecomat` in the Plugins tab and click *Install*. The UI then renders the configuration form from `config.schema.json`.
+
+To install from the command line:
 
 ```bash
 npm install -g homebridge-platform-tecomat
@@ -20,7 +30,7 @@ npm install -g homebridge-platform-tecomat
 
 ## Configuration
 
-Add the following to your Homebridge config.json:
+Most users should configure the plugin through the Homebridge UI. To edit `config.json` directly, add a block under `platforms`:
 
 ```json
 {
@@ -40,47 +50,65 @@ Add the following to your Homebridge config.json:
 }
 ```
 
-### Configuration Parameters
+The `platform` value must be exactly `HomeBridgePlatformTecomat` — that's the alias declared in both `config.schema.json` and `src/settings.ts`.
 
-| Parameter | Description |
-|-----------|-------------|
-| platform | Must be "HomeBridgePlatformTecomat" |
-| name | Plugin name as displayed in Homebridge logs |
-| ipAddress | IP address of your PLC server |
-| port | Port number of your PLC server |
-| pollingInterval | How often to update status (in seconds) |
-| commandTimeout | Timeout for PLC commands (in milliseconds) |
-| discoveryTimeout | Timeout for initial discovery commands (in milliseconds) |
-| autoDiscoveryInterval | How often to automatically rediscover devices (in minutes, 0 to disable) |
-| debug | Enable additional logging |
+### Parameters
 
-## How It Works
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `platform` | string | — | Must be `HomeBridgePlatformTecomat` |
+| `name` | string | — | Display name used in Homebridge logs |
+| `ipAddress` | string | — | IP of the PLC's TCP server |
+| `port` | integer | — | Port of the PLC's TCP server |
+| `pollingInterval` | integer (s) | `10` | How often to refresh position/state from the PLC |
+| `commandTimeout` | integer (ms) | `5000` | Per-command socket timeout |
+| `discoveryTimeout` | integer (ms) | `15000` | Timeout for the initial `LIST:` discovery command |
+| `autoDiscoveryInterval` | integer (min) | `60` | Rerun discovery every N minutes (0 disables) |
+| `debug` | boolean | `false` | Verbose logging of every PLC command/response |
 
-The plugin connects to your PLC server and:
+## How it works
 
-1. Sends a "LIST:" command to discover all available registers
-2. Parses the response to identify jalousie control blocks
-3. Retrieves the name for each jalousie using "GET:" commands
-4. Exposes each jalousie to HomeKit as a window covering accessory
-5. Controls the jalousies by sending "SET:" commands with the appropriate values
+1. Sends `LIST:` to the PLC and parses the response for `*.CJALOUSIE.*` blocks.
+2. For each block, fetches `JALOUSIENAME` (or `NAME` as fallback) and `UPDWTIME`.
+3. Exposes each jalousie as a HomeKit `WindowCovering` service with `CurrentPosition`, `TargetPosition`, `PositionState` and `HoldPosition` characteristics.
+4. Drives motion with `SET:<path>.WEBUP,TRUE` / `SET:<path>.WEBDW,TRUE` and times the stop using `UPDWTIME`. Before issuing a stop toggle the plugin verifies `GTSAP1_SHUTTER_run` so it never restarts a jalousie that has already reached its limit.
 
-## PLC Protocol
+### Position conventions
 
-The plugin communicates with the PLC using the following commands:
+- HomeKit: `0` = fully closed, `100` = fully open
+- PLC: `100` = fully closed, `0` = fully open
 
-- `LIST:` - Gets all available registers
-- `GET:<register>` - Gets the value of a specific register
-- `SET:<register>,<value>` - Sets a value to a specific register
+The plugin inverts at the boundary so the HomeKit slider feels natural.
+
+## PLC protocol
+
+The plugin speaks a thin newline-delimited TCP protocol:
+
+- `LIST:` — list available registers
+- `GET:<register>` — read a register
+- `SET:<register>,<value>` — write a register
+
+## Development
+
+```bash
+git clone https://github.com/tmeinlschmidt/homebridge-platform-tecomat.git
+cd homebridge-platform-tecomat
+npm install
+npm test          # 47 unit + integration tests
+npm run lint
+npm run build
+npm run watch     # rebuilds and runs homebridge against test/hbConfig
+```
+
+Pure logic (position math, response parsers, state machine) lives in `src/jalousieLogic.ts`. The accessory class accepts an injected transport so the suite under `test/` can drive it without real network IO.
 
 ## Troubleshooting
 
-If you experience issues:
-
-1. Enable debug mode in the configuration
-2. Check Homebridge logs for detailed information
-3. Verify PLC connection settings
-4. Ensure your PLC is properly configured to accept and process the commands
+1. Set `"debug": true` in your config and restart Homebridge.
+2. Check Homebridge logs — every PLC request/response is dumped in debug mode.
+3. Verify `ipAddress` / `port` and that the PLC's TCP server accepts unauthenticated connections from your Homebridge host.
+4. If the slider lags behind reality, lower `pollingInterval`.
 
 ## License
 
-Apache-2.0
+[Apache-2.0](LICENSE)
